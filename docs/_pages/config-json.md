@@ -12,10 +12,7 @@ title: "DeepSpeed Configuration JSON"
 | Value                                                                                                                                                                                                                                                                                                                                                                             | Example |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | The effective training batch size. This is the amount of data samples that leads to one step of model update. ***train\_batch\_size*** is aggregated by the batch size that a single GPU processes in one forward/backward pass (a.k.a., ***train\_step\_batch\_size***),  the gradient accumulation steps (a.k.a., ***gradient\_accumulation\_steps***), and the number of GPUs. | `32`    |
-
-
 ***train\_micro\_batch\_size\_per\_gpu***: [integer]
-
 | Description                                                                                                                                                                                                                                                                                                                    | Default                        |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
 | Batch size to be processed by one GPU in one step (without gradient accumulation). When specified, ***gradient\_accumulation\_steps*** is automatically calculated using ***train\_batch\_size*** and number of GPUs. Should not be concurrently specified with ***gradient\_accumulation\_steps*** in the configuration JSON. | ***train\_batch\_size*** value |
@@ -32,10 +29,10 @@ title: "DeepSpeed Configuration JSON"
 
 ***optimizer***: [dictionary]
 
-| Fields | Value                                                                                                                                                                                                   | Example                      |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| type   | The optimizer name. DeepSpeed natively supports **Adam**, **AdamW**, **OneBitAdam**, and **Lamb** optimizers and will import other optimizers from [torch](https://pytorch.org/docs/stable/optim.html). | `"Adam"`                     |
-| params | Dictionary of parameters to instantiate optimizer. The parameter names must match the optimizer constructor signature (e.g., for [Adam](https://pytorch.org/docs/stable/optim.html#torch.optim.Adam)).  | `{"lr": 0.001, "eps": 1e-8}` |
+| Fields | Value                                                                                                                                                                                                                                                                                        | Example                      |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| type   | The optimizer name. DeepSpeed natively supports **Adam**, **AdamW**, **OneBitAdam**, and **Lamb** optimizers (See [here](https://deepspeed.readthedocs.io/en/latest/optimizers.html) for details) and will import other optimizers from [torch](https://pytorch.org/docs/stable/optim.html). | `"Adam"`                     |
+| params | Dictionary of parameters to instantiate optimizer. The parameter names must match the optimizer constructor signature (e.g., for [Adam](https://pytorch.org/docs/stable/optim.html#torch.optim.Adam)).                                                                                       | `{"lr": 0.001, "eps": 1e-8}` |
 
   Example of ***optimizer*** with Adam
 
@@ -83,10 +80,10 @@ The Adam optimizer also supports the following two params keys/values in additio
 
 ***scheduler***: [dictionary]
 
-| Fields | Value                                                                                                                        | Example                                        |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| type   | The scheduler name. See [here](https://deepspeed.readthedocs.io/en/latest/deepspeed.pt.html) for list of support schedulers. | `"WarmupLR"`                                   |
-| params | Dictionary of parameters to instantiate scheduler. The parameter names should match scheduler constructor signature.         | `{"warmup_min_lr": 0, "warmup_max_lr": 0.001}` |
+| Fields | Value                                                                                                                      | Example                                        |
+| ------ | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| type   | The scheduler name. See [here](https://deepspeed.readthedocs.io/en/latest/schedulers.html) for list of support schedulers. | `"WarmupLR"`                                   |
+| params | Dictionary of parameters to instantiate scheduler. The parameter names should match scheduler constructor signature.       | `{"warmup_min_lr": 0, "warmup_max_lr": 0.001}` |
 
 Example of ***scheduler***
 
@@ -162,12 +159,9 @@ Example of ***scheduler***
 | ***loss\_scale*** is a ***fp16*** parameter representing the loss scaling value for FP16 training. The default value of 0.0 results in dynamic loss scaling, otherwise the value will be used for static fixed loss scaling. | `0.0`   |
 
 ***fp16:initial\_scale\_power***: [integer]
-
-| Description                                                                                                                                                                                                   | Default |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| ***initial\_loss\_scale\_power*** is a **fp16** parameter representing the power of the initial dynamic loss scale value. The actual loss scale is computed as 2<sup>***initial\_loss\_scale\_power***</sup>. | `32`    
-
-***fp16:loss\_scale\_window***: [integer]
+| Description                                                                                                                                                                                       | Default |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| ***initial\_scale\_power*** is a **fp16** parameter representing the power of the initial dynamic loss scale value. The actual loss scale is computed as 2<sup>***initial\_scale\_power***</sup>. | `32`    | ***fp16:loss\_scale\_window***: [integer]
 
 | Description                                                                                                                       | Default |
 | --------------------------------------------------------------------------------------------------------------------------------- | ------- |
