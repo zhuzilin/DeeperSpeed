@@ -86,7 +86,7 @@ class NcclBackend(object):
 
         # worker_scale = self.compression_backend.cupy2torch(cupy_worker_scale)
         recvbuf_sign = self.compression_backend.cupy2torch(cupy_recvbuf_sign)
-        # recvbuf_scale = self.compression_backend.cupy2torch(cupy_recvbuf_scale)
+        #recvbuf_scale = self.compression_backend.cupy2torch(cupy_recvbuf_scale)
         recvbuf_scale = [
             torch.zeros(1,
                         dtype=worker_scale.dtype,
@@ -106,13 +106,13 @@ class NcclBackend(object):
         cupy_sign_list_packed = None
 
         cupy_recvbuf_sign = self.compression_backend.torch2cupy(recvbuf_sign)
-        # cupy_recvbuf_scale = self.compression_backend.torch2cupy(torch.stack(recvbuf_scale))
+        #cupy_recvbuf_scale = self.compression_backend.torch2cupy(torch.stack(recvbuf_scale))
 
         compensated_server_m = self.compression_backend.cupy2torch(
             (cupy.unpackbits(cupy_recvbuf_sign.flatten())).reshape(
                 self.size,
                 -1)).float().add_(-0.5).mul_(2.0).mul_(
-            torch.stack(recvbuf_scale).mul_(1 / self.size)).sum(0)
+                    torch.stack(recvbuf_scale).mul_(1 / self.size)).sum(0)
         compensated_server_m.add_(server_error)
         server_scale = torch.norm(compensated_server_m) / np.sqrt(
             compensated_server_m.numel())
@@ -172,7 +172,7 @@ class NcclBackend(object):
                 (cupy.unpackbits(cupy_recvbuf_sign_server.flatten())).reshape(
                     self.size,
                     -1)).float().add_(-0.5).mul_(2.0).mul_(
-                self.compression_backend.cupy2torch(
+                        self.compression_backend.cupy2torch(
                     cupy_recvbuf_scale_server)).flatten().data)
         if original_size != worker_error_size:
             buffer_m = buffer_m[0:original_size]
