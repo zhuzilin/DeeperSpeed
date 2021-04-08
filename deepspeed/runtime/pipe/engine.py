@@ -391,6 +391,123 @@ class PipelineEngine(DeepSpeedEngine):
 
         return self.agg_eval_loss
 
+    def inference_batch(self, data_iter):
+        """Inference the pipeline on a single batch of data from ``data_iter``.
+
+        This method is equivalent to:
+
+        .. code-block:: python
+
+            module.eval()
+            with torch.no_grad():
+                output = module(batch)
+
+        .. warning::
+            we're assuming that in inference we a) don't want to calculate loss and b) gradient_accum_steps = 0
+
+        Args:
+            data_iter (Iterator): Iterator of data to evaluate.
+            data_iter should have dummy labels as deepspeed expects it this way
+
+        Returns:
+            logits, presents (NB this is not a general purpose function, it's designed specifically to run with
+            gpt-neox, which will return logits + presents in inference. This is a massive hack.)
+        """
+        self.module.eval()
+        self.total_loss = None
+        if self.micro_batches > 1:
+            print_rank_0('WARNING: setting g.a.s to 1 in inference')
+            self.micro_batches = 1
+        train_batch_fn = self.batch_fn
+        self.set_batch_fn(lambda x: x) # we just want to return `data_iter` as is
+        # deepspeed sends metadata across pipeline stages only once in the first step, then assumes it will stay
+        # constant in inference, the metadata of the tensors being sent across pipe stages may change we need to set
+        # these two flags in order for deepspeed to send the metadata every step, otherwise torch.distributed hangs
+        # silently.
+        self.first_output_send = True
+        self.pipe_recv_buf = None
+        if self.is_data_parallel:
+            raise NotImplementedError('Inference not yet implemented for pipeline + data parellel')
+
+        # Use the provided data iterator
+        train_iterator = self.data_iterator
+        self.set_dataiterator(data_iter)
+
+        # Do the work
+        sched = schedule.InferenceSchedule(micro_batches=self.micro_batches,
+                                           stages=self.num_stages,
+                                           stage_id=self.stage_id)
+        with torch.no_grad():
+            self._exec_schedule(sched)
+
+        # the shapes are variable so we need to first broadcast the shapes, then the tensors themselves
+        if self.is_last_stage():
+            logits, presents = self.total_loss
+            logits = logits.clone().detach()
+            presents = presents.clone().detach()
+            logits_shape = list(logits.shape)
+            presents_shape = list(presents.shape)
+
+            logits_shape_tensor = torch.LongTensor(logits_shape).to(self.device)
+            presents_shape_tensor = torch.LongTensor(presents_shape).to(self.device)
+            dist.broadcast(tensor=logits_shape_tensor,
+                           src=self.global_rank)
+            dist.broadcast(tensor=presents_shape_tensor,
+                           src=self.global_rank)
+        else:
+            src_rank = self.grid.stage_to_global(self.num_stages - 1)
+            logits_shape_tensor = torch.LongTensor([0] * 3).to(self.device)
+            presents_shape_tensor = torch.LongTensor([0] * 6).to(self.device)
+            dist.broadcast(tensor=logits_shape_tensor,
+                           src=src_rank)
+            dist.broadcast(tensor=presents_shape_tensor,
+                           src=src_rank)
+            logits_shape_tensor = logits_shape_tensor.clone().detach()
+            presents_shape_tensor = presents_shape_tensor.clone().detach()
+
+        logits_shape = logits_shape_tensor.tolist()
+        presents_shape = presents_shape_tensor.tolist()
+
+        if self.is_last_stage():
+            dist.broadcast(tensor=logits,
+                           src=self.global_rank,
+                           group=self.mpu.get_pipe_parallel_group())
+            dist.broadcast(tensor=presents,
+                           src=self.global_rank,
+                           group=self.mpu.get_pipe_parallel_group())
+
+        else:
+            logits = torch.zeros(logits_shape, dtype=torch.half if self.fp16_enabled() else torch.float32).to(
+                self.device)
+            presents = torch.zeros(presents_shape, dtype=torch.half if self.fp16_enabled() else torch.float32).to(
+                self.device)
+            src_rank = self.grid.stage_to_global(self.num_stages - 1)
+            assert src_rank in self.grid.pp_group
+            dist.broadcast(tensor=logits,
+                           src=src_rank,
+                           group=self.grid.get_pipe_parallel_group())
+            dist.broadcast(tensor=presents,
+                           src=src_rank,
+                           group=self.grid.get_pipe_parallel_group())
+            logits = logits.clone().detach()
+            presents = presents.clone().detach()
+
+        # self.agg_eval_loss = self._aggregate_total_loss()
+        if self.tensorboard_enabled():
+            if self.global_rank == 0:
+                self.summary_events = [(f'Train/Samples/eval_loss',
+                                        self.agg_eval_loss.mean().item(),
+                                        self.global_samples)]
+                for event in self.summary_events:  # write_summary_events
+                    self.summary_writer.add_scalar(event[0], event[1], event[2])
+                self.summary_writer.flush()
+
+        # Restore the training iterator & batch_fn
+        self.set_dataiterator(train_iterator)
+        self.set_batch_fn(train_batch_fn)
+
+        return logits, presents
+
     def is_first_stage(self):
         """True if this process is in the first stage in the pipeline."""
         return self.stage_id == 0
@@ -779,7 +896,6 @@ class PipelineEngine(DeepSpeedEngine):
         if self.wall_clock_breakdown():
             self.timers('pipe_send_output').start()
             self.timers('comms').start()
-
         outputs = self.pipe_buffers['outputs'][buffer_id]
 
         # NCCL does not like to send torch.BoolTensor types, so cast the mask to half().
@@ -870,7 +986,6 @@ class PipelineEngine(DeepSpeedEngine):
             self.timers('pipe_recv_input').start()
 
         recvd = None
-
         # Allocate the buffer if necessary
         if self.pipe_recv_buf is None:
             self.pipe_recv_buf = self._recv_tensor_meta(self.prev_stage)
