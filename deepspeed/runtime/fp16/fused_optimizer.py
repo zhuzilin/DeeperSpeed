@@ -8,13 +8,10 @@ This file is adapted from FP16_Optimizer in NVIDIA/apex
 import torch
 import math
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
-import torch.distributed as dist
 
 from deepspeed.runtime.utils import get_grad_norm, CheckOverflow, get_weight_norm
 from deepspeed.runtime.fp16.loss_scaler import INITIAL_LOSS_SCALE, SCALE_WINDOW, MIN_LOSS_SCALE
 from deepspeed.utils import logger, log_dist
-from deepspeed.runtime.fp16.onebit.adam import OnebitAdam
-from deepspeed.runtime.fp16.onebit.lamb import OnebitLamb
 
 
 class FP16_Optimizer(object):
