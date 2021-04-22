@@ -8,7 +8,7 @@ import deepspeed
 from deepspeed.runtime.fp16.onebit.onebitadam import OnebitAdam
 =======
 import os
->>>>>>> ab5534fc4c0f8ca21ada321f9730d723aa31288b:tests/onebit/test_nccl_backend.py
+>>>>>>> 669028f0fd5067c9247120cb21fd6e9bea4820a9:tests/onebit/test_nccl_backend.py
 
 from deepspeed.runtime.comm.nccl import NcclBackend
 
@@ -93,7 +93,7 @@ else:
 if test_correctness:
     if torch.sum(diff_server_mask) == 0:
         print('Successfully passed the test for NCCL Backend at Rank {}'.format(rank))
->>>>>>> ab5534fc4c0f8ca21ada321f9730d723aa31288b:tests/onebit/test_nccl_backend.py
+>>>>>>> 669028f0fd5067c9247120cb21fd6e9bea4820a9:tests/onebit/test_nccl_backend.py
     else:
         check_mag_mask = mpi_server[diff_server_mask] > magnitude_threshold
         if torch.sum(check_mag_mask) == 0:

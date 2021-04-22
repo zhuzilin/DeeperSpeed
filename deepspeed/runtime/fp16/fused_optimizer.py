@@ -8,12 +8,10 @@ This file is adapted from FP16_Optimizer in NVIDIA/apex
 import torch
 import math
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
-import torch.distributed as dist
 
 from deepspeed.runtime.utils import get_grad_norm, CheckOverflow, get_weight_norm
 from deepspeed.runtime.fp16.loss_scaler import INITIAL_LOSS_SCALE, SCALE_WINDOW, MIN_LOSS_SCALE
 from deepspeed.utils import logger, log_dist
-from deepspeed.runtime.fp16.onebit.onebitadam import OnebitAdam
 
 
 class FP16_Optimizer(object):
@@ -25,6 +23,7 @@ class FP16_Optimizer(object):
 
     def __init__(self,
                  init_optimizer,
+                 deepspeed=None,
                  static_loss_scale=1.0,
                  dynamic_loss_scale=False,
                  initial_dynamic_scale=2 ** 32,
@@ -103,7 +102,9 @@ class FP16_Optimizer(object):
         self.mpu = mpu
 
         self.overflow = False
-        self.overflow_checker = CheckOverflow(self.fp16_groups, mpu=self.mpu)
+        self.overflow_checker = CheckOverflow(self.fp16_groups,
+                                              mpu=self.mpu,
+                                              deepspeed=deepspeed)
         self.initialize_optimizer_states()
 
     def initialize_optimizer_states(self):
@@ -156,10 +157,10 @@ class FP16_Optimizer(object):
 
         if self.overflow:
             if self.verbose:
-                logger.info(
-                    "[deepspeed] fp16 dynamic loss scale overflow! Skipping step. Attempted loss "
-                    "scale: {}, reducing to {}".format(prev_scale,
-                                                       self.cur_scale))
+                logger.info("[deepspeed] OVERFLOW! Skipping step. Attempted loss "
+                            "scale: {}, reducing to {}".format(
+                    prev_scale,
+                    self.cur_scale))
             return self.overflow
         combined_scale = self.unscale_and_clip_grads(grads_groups_flat,
                                                      norm_groups,
@@ -215,18 +216,6 @@ class FP16_Optimizer(object):
         self.overflow = self.overflow_checker.has_overflow(fp16_params)
         self.stop_timers([OVERFLOW_CHECK])
         prev_scale = self.cur_scale
-        if isinstance(self.optimizer, OnebitAdam):
-            # if optimizer has mpu (i.e, is pipeline parallel), communicate the skipped step to all optimizers in group
-            if hasattr(self.optimizer.comm_backend_handle,
-                       "mpu") and self.optimizer.comm_backend_handle.mpu is not None:
-                if self.overflow:
-                    bool_tensor = torch.zeros(1).cuda()
-                else:
-                    bool_tensor = torch.ones(1).cuda()
-                dist.all_reduce(bool_tensor, op=dist.ReduceOp.PRODUCT)
-                if not any(bool_tensor):
-                    self.overflow = True
-
         self._update_scale(self.overflow)
 
         if self.overflow:
