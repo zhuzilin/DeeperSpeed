@@ -100,7 +100,6 @@ def print_configuration(args, name):
 class DeepSpeedEngine(Module):
     r"""DeepSpeed engine for training.
     """
-
     def __init__(self,
                  args,
                  model,
@@ -134,6 +133,9 @@ class DeepSpeedEngine(Module):
         self.enable_backward_allreduce = True
         self.progressive_layer_drop = None
         self.dist_backend = "nccl"
+        self.store_gradients = False
+        self.store_gradients_cpu = False
+        self.stored_gradients = None
 
         if dist_init_required is None:
             dist_init_required = not dist.is_initialized()
@@ -1103,6 +1105,13 @@ class DeepSpeedEngine(Module):
                                                max_norm=self.gradient_clipping())
             self.timers('_step_clipping').stop()
 
+        # store gradients
+        if self.store_gradients:
+            if self.store_gradients_cpu:
+                self.stored_gradients = list([p.grad.clone().cpu() for p in self.module.parameters()])
+            else:
+                self.stored_gradients = list([p.grad.clone() for p in self.module.parameters()])
+
         self.timers('_step_step').start()
         if self.zero_optimization_stage() == 1 and self.wall_clock_breakdown():
             self.optimizer.step(comms_timer=self.timers('comms'))
@@ -1726,7 +1735,6 @@ class DeepSpeedEngine(Module):
             dp_world_size=self.dp_world_size,
             mp_world_size=self.mp_world_size,
         )
-
         state.update(client_state)
 
         log_dist(message=f'Saving model checkpoint: {save_path}', ranks=[0])
