@@ -662,4 +662,68 @@ class BSLongformerSparsityConfig(SparsityConfig):
 
         layout = self.check_and_propagate_first_head_layout(layout)
         return layout
+  
+
+class LocalSlidingWindowSparsityConfig(SparsityConfig):
+    """Configuration class to store `Local Sliding Window` sparsity configuration - a local sliding window attention.
+    This class extends parent class of `SparsityConfig` and customizes it for `Local` sparsity.
+    """
+    def __init__(self,
+                 num_heads,
+                 block=16,
+                 num_sliding_window_blocks=3,
+                 attention='unidirectional'):
+        """Initialize the Local Sliding Window Sparsity Pattern Config.
+
+        For usage example please see, TODO DeepSpeed Sparse Transformer Tutorial
+
+        Arguments:
+             num_heads: required: an integer determining number of attention heads of the layer.
+             block: optional: an integer determining the block size. Current implementation of sparse self-attention is based on blocked sparse matrices. In which this parameter defines size of such blocks, `Block X Block`.
+             num_sliding_window_blocks: optional: an integer determining the number of blocks in sliding local attention window.
+             num_global_blocks: optional: an integer determining how many consecutive blocks, starting from index 0, are considered as global attention. Global block tokens will be attended by all other block tokens and will attend to all other block tokens as well.
+        """
+
+        super().__init__(num_heads, block, different_layout_per_head)
+        self.num_sliding_window_blocks = num_sliding_window_blocks
+
+    def set_sliding_window_layout(self, h, layout):
+        """Sets sliding local attention layout used by the given head in the sparse attention.
+
+        Arguments:
+             h: required: an integer determining head index
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+
+        Return:
+             layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which local sliding window layout is set
+        """
+
+        num_blocks = layout.shape[1]
+        if (num_blocks < self.num_sliding_window_blocks):
+            raise ValueError(
+                f'Number of sliding window blocks, {self.num_sliding_window_blocks}, must be smaller than overal number of blocks in a row, {num_blocks}!'
+            )
+
+        w = self.num_sliding_window_blocks // 2
+        for row in range(0, num_blocks):
+            start = max(0, row - w)
+            end = min(row + w + 1, num_blocks) if self.attention_type == "bidirectional" else row + 1
+            layout[h, row, start:end] = 1
+        return layout
+
+    def make_layout(self, seq_len):
+        """Generates `Local Sliding Window` sparsity layout used by each head in the sparse attention.
+
+        Arguments:
+             seq_len: required: an integer determining number of attention heads of the layer.
+
+        Return:
+             layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing `BigBird` sparsity layout of all head
+        """
+
+        layout = self.setup_layout(seq_len)
+        for h in range(0, self.num_layout_heads):
+            layout = self.set_sliding_window_layout(h, layout)
+        layout = self.check_and_propagate_first_head_layout(layout)
+        return layout
 
