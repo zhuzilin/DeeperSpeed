@@ -681,10 +681,9 @@ class LocalSlidingWindowSparsityConfig(SparsityConfig):
              num_heads: required: an integer determining number of attention heads of the layer.
              block: optional: an integer determining the block size. Current implementation of sparse self-attention is based on blocked sparse matrices. In which this parameter defines size of such blocks, `Block X Block`.
              num_sliding_window_blocks: optional: an integer determining the number of blocks in sliding local attention window.
-             num_global_blocks: optional: an integer determining how many consecutive blocks, starting from index 0, are considered as global attention. Global block tokens will be attended by all other block tokens and will attend to all other block tokens as well.
         """
 
-        super().__init__(num_heads, block, different_layout_per_head)
+        super().__init__(num_heads, block)
         self.num_sliding_window_blocks = num_sliding_window_blocks
 
     def set_sliding_window_layout(self, h, layout):
