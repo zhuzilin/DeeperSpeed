@@ -430,7 +430,8 @@ class BigBirdSparsityConfig(SparsityConfig):
                  different_layout_per_head=False,
                  num_random_blocks=1,
                  num_sliding_window_blocks=3,
-                 num_global_blocks=1):
+                 num_global_blocks=1,
+                 attention='bidirectional'):
         """Initialize the BigBird Sparsity Pattern Config.
 
         For usage example please see, TODO DeepSpeed Sparse Transformer Tutorial
@@ -449,6 +450,7 @@ class BigBirdSparsityConfig(SparsityConfig):
         self.num_random_blocks = num_random_blocks
         self.num_sliding_window_blocks = num_sliding_window_blocks
         self.num_global_blocks = num_global_blocks
+        self.attention = attention
 
     def set_random_layout(self, h, layout):
         """Sets random attantion layout used by the given head in the sparse attention.
@@ -469,7 +471,8 @@ class BigBirdSparsityConfig(SparsityConfig):
             )
 
         for row in range(0, num_blocks):
-            rnd_cols = random.sample(range(0, num_blocks), self.num_random_blocks)
+            sample_range = range(0, num_blocks) if self.attention == 'bidirectional' else range(0, row+1)
+            rnd_cols = random.sample(sample_range, self.num_random_blocks)
             layout[h, row, rnd_cols] = 1
         return layout
 
@@ -493,7 +496,7 @@ class BigBirdSparsityConfig(SparsityConfig):
         w = self.num_sliding_window_blocks // 2
         for row in range(0, num_blocks):
             start = max(0, row - w)
-            end = min(row + w + 1, num_blocks)
+            end = min(row + w + 1, num_blocks) if self.attention == "bidirectional" else row + 1
             layout[h, row, start:end] = 1
         return layout
 
@@ -519,6 +522,10 @@ class BigBirdSparsityConfig(SparsityConfig):
 
         #global columns
         layout[h, :, 0:self.num_global_blocks] = 1
+
+        if self.attention == 'unidirectional':
+            # zero out anything attending to the future
+            layout = torch.tril(layout)
 
         return layout
 
@@ -556,7 +563,8 @@ class BSLongformerSparsityConfig(SparsityConfig):
                  different_layout_per_head=False,
                  num_sliding_window_blocks=3,
                  global_block_indices=[0],
-                 global_block_end_indices=None):
+                 global_block_end_indices=None,
+                 attention='bidirectional'):
         """Initialize the edited `Longformer` Sparsity Pattern Config.
 
         For usage example please see, TODO DeepSpeed Sparse Transformer Tutorial
@@ -587,6 +595,7 @@ class BSLongformerSparsityConfig(SparsityConfig):
                         f'Global block start index, {start_idx}, must be smaller than global block end index, {end_idx}!'
                     )
         self.global_block_end_indices = global_block_end_indices
+        self.attention = attention
 
     def set_sliding_window_layout(self, h, layout):
         """Sets sliding local attantion layout used by the given head in the sparse attention.
@@ -643,6 +652,8 @@ class BSLongformerSparsityConfig(SparsityConfig):
 
                     #global columns
                     layout[h, :, start_idx:end_idx] = 1
+        if self.attention == 'unidirectional':
+            layout = torch.tril(layout)
         return layout
 
     def make_layout(self, seq_len):
