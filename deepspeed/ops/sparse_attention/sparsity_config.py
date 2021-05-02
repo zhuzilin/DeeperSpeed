@@ -685,6 +685,7 @@ class LocalSlidingWindowSparsityConfig(SparsityConfig):
 
         super().__init__(num_heads, block)
         self.num_sliding_window_blocks = num_sliding_window_blocks
+        self.attention = attention
 
     def set_sliding_window_layout(self, h, layout):
         """Sets sliding local attention layout used by the given head in the sparse attention.
@@ -706,7 +707,7 @@ class LocalSlidingWindowSparsityConfig(SparsityConfig):
         w = self.num_sliding_window_blocks // 2
         for row in range(0, num_blocks):
             start = max(0, row - w)
-            end = min(row + w + 1, num_blocks) if self.attention_type == "bidirectional" else row + 1
+            end = min(row + w + 1, num_blocks) if self.attention == "bidirectional" else row + 1
             layout[h, row, start:end] = 1
         return layout
 
