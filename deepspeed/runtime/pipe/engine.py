@@ -474,6 +474,9 @@ class PipelineEngine(DeepSpeedEngine):
         presents_shape = presents_shape_tensor.tolist()
 
         if self.is_last_stage():
+            if self.precision() == torch.bfloat16:
+                logits = logits.to(torch.float)
+                presents = presents.to(torch.float)
             dist.broadcast(tensor=logits,
                            src=self.global_rank,
                            group=self.mpu.get_pipe_parallel_group())
@@ -482,9 +485,9 @@ class PipelineEngine(DeepSpeedEngine):
                            group=self.mpu.get_pipe_parallel_group())
 
         else:
-            logits = torch.zeros(logits_shape, dtype=torch.half if self.fp16_enabled() else torch.float32).to(
+            logits = torch.zeros(logits_shape, dtype=self.precision() if self.precision() != torch.bfloat16 else torch.float32).to(
                 self.device)
-            presents = torch.zeros(presents_shape, dtype=torch.half if self.fp16_enabled() else torch.float32).to(
+            presents = torch.zeros(presents_shape, dtype=self.precision() if self.precision() != torch.bfloat16 else torch.float32).to(
                 self.device)
             src_rank = self.grid.stage_to_global(self.num_stages - 1)
             assert src_rank in self.grid.pp_group
@@ -494,6 +497,7 @@ class PipelineEngine(DeepSpeedEngine):
             dist.broadcast(tensor=presents,
                            src=src_rank,
                            group=self.grid.get_pipe_parallel_group())
+            logits, presents = logits.to(self.precision()), presents.to(self.precision())
             logits = logits.clone().detach()
             presents = presents.clone().detach()
 
@@ -998,6 +1002,9 @@ class PipelineEngine(DeepSpeedEngine):
         if isinstance(self.pipe_recv_buf, torch.Tensor):
             p2p.recv(self.pipe_recv_buf, self.prev_stage)
             recvd = self.pipe_recv_buf.clone().detach()
+            if self.precision() == torch.bfloat16:
+                # the communicated tensors will be in fp32 - so convert them back to bf16
+                recvd.to(self.precision())
             recvd.requires_grad = recvd.is_floating_point()
         else:
             assert isinstance(self.pipe_recv_buf, tuple)
@@ -1013,6 +1020,9 @@ class PipelineEngine(DeepSpeedEngine):
                     buffer = self.meta_buffer
 
                 p2p.recv(buffer, self.prev_stage)
+                if self.precision() == torch.bfloat16:
+                    # the communicated tensors will be in fp32 - so convert them back to bf16
+                    buffer.to(self.precision())
                 recvd[idx] = buffer.clone().detach()
 
             # NCCL does not like to send torch.BoolTensor types, so un-cast the
@@ -1120,13 +1130,9 @@ class PipelineEngine(DeepSpeedEngine):
             A tensor from torch.zeros() allocated on self.device.
         """
 
-        if fp16 is None:
-            fp16 = self.fp16_enabled()
+        precision = self.precision() if self.precision() != torch.bfloat16 else torch.float32
+        return torch.zeros(shape, dtype=precision, device=self.device, **kwargs)
 
-        if fp16:
-            return torch.zeros(shape, dtype=torch.half, device=self.device, **kwargs)
-        else:
-            return torch.zeros(shape, device=self.device, **kwargs)
 
     def _allocate_buffer(self, shape, num_buffers=-1, **kwargs):
         buffers = []

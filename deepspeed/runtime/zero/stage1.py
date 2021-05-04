@@ -120,12 +120,16 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                  allgather_size=500000000,
                  clip_grad=0.0,
                  max_elements_per_comm=5e8,
-                 elastic_checkpoint=True):
+                 elastic_checkpoint=True,
+                 precision=torch.half):
 
         # Load pre-built or JIT compile (un)flatten ops
         util_ops = UtilsBuilder().load()
         self.flatten = util_ops.flatten
         self.unflatten = util_ops.unflatten
+
+        # set precision
+        self.precision = precision
 
         if dp_process_group is not None and partition_size is not None:
             raise ValueError("Cannot specify both dp_process_group "
@@ -622,6 +626,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                                  postscale_gradients,
                                  gradient_predivide_factor,
                                  gradient_average):
+
         world_size = dist.get_world_size(group=self.dp_process_group)
         local_rank = dist.get_rank(group=self.dp_process_group)
 
@@ -634,7 +639,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                     comm_tensor_list=self.params_in_rank_sub_partitions[i][rank],
                     comm_param_offsets=self.params_in_rank_sub_partitions_offsets[i]
                     [rank],
-                    dtype=torch.half,
+                    dtype=self.precision,
                     default_device=self.default_device,
                     sub_partition_size=self.sub_partition_sizes[i],
                     num_comm_intervals=self.num_comm_intervals_per_group[i])

@@ -95,7 +95,8 @@ class FP16_DeepSpeedZeroOptimizer(object):
                  allreduce_always_fp32=False,
                  postscale_gradients=True,
                  gradient_predivide_factor=1.0,
-                 gradient_accumulation_steps=1):
+                 gradient_accumulation_steps=1,
+                 precision=torch.half):
 
         if dist.get_rank() == 0:
             logger.info(f"Reduce bucket size {reduce_bucket_size}")
@@ -113,6 +114,7 @@ class FP16_DeepSpeedZeroOptimizer(object):
         if not torch.cuda.is_available:
             raise SystemError("Cannot use fp16 without CUDA.")
         self.optimizer = init_optimizer
+        self.precision = precision
 
         # Load pre-built or JIT compile (un)flatten ops
         util_ops = UtilsBuilder().load()
@@ -306,10 +308,10 @@ class FP16_DeepSpeedZeroOptimizer(object):
             self.grad_position = {}
             self.temp_grad_buffer_for_cpu_offload = torch.zeros(
                 largest_param_numel,
-                device=self.device).half().pin_memory()
+                device=self.device).to(self.precision).pin_memory()
             self.temp_grad_buffer_for_gpu_offload = torch.zeros(
                 largest_param_numel,
-                device=torch.cuda.current_device()).half()
+                device=torch.cuda.current_device()).to(self.precision)
 
             for i, params_group in enumerate(self.fp16_groups):
                 self.get_grad_position(i,

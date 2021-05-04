@@ -2,6 +2,7 @@
 Copyright (c) Microsoft Corporation
 Licensed under the MIT license.
 """
+import torch
 
 #############################################
 # Routes
@@ -127,6 +128,18 @@ FP16 = "fp16"
 
 FP16_ENABLED = "enabled"
 FP16_ENABLED_DEFAULT = False
+
+FP16_TYPE = "type"
+FP16_TYPE_DEFAULT = "fp16"
+PRECISION_TYPES = {
+    "fp32": torch.float32,
+    "float32": torch.float32,
+    "float": torch.float32,
+    "fp16": torch.half,
+    "float16": torch.half,
+    "half": torch.half,
+    "bfloat16": torch.bfloat16
+}
 
 # FP16 loss scale, zero means using dynamic scaling
 FP16_LOSS_SCALE = "loss_scale"
