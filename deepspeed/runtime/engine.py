@@ -572,9 +572,13 @@ class DeepSpeedEngine(Module):
 
         for p in self.module.parameters():
             if torch.is_tensor(p) and is_replicated(p):
+                if self.precision() == torch.bfloat16:
+                    p = p.float()
                 dist.broadcast(p,
                                self.broadcast_src_rank,
                                group=self.data_parallel_group)
+                if self.precision() == torch.bfloat16:
+                    p = p.bfloat16()
 
     def _configure_distributed_model(self, model):
         self.module = model
