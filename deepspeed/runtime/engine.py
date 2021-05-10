@@ -21,7 +21,7 @@ from deepspeed.runtime.zero.stage1 import FP16_DeepSpeedZeroOptimizer_Stage1
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer
 from deepspeed.runtime.activation_checkpointing import checkpointing as activation_checkpointing
-from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer, FP16_FUSED_SUPPORTED_OPTIMIZERS, is_fp16_fused_supported_optimizer
+from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer
 from deepspeed.runtime.fp16.unfused_optimizer import FP16_UnfusedOptimizer
 from deepspeed.runtime.config import DeepSpeedConfig, DEEPSPEED_OPTIMIZERS, \
     ADAM_OPTIMIZER, ADAMW_OPTIMIZER, LAMB_OPTIMIZER, ONEBIT_ADAM_OPTIMIZER, ONEBIT_LAMB_OPTIMIZER, \
@@ -397,6 +397,9 @@ class DeepSpeedEngine(Module):
     def fp16_enabled(self):
         return self._config.fp16_enabled
 
+    def precision(self):
+        return self._config.precision
+
     def amp_enabled(self):
         return self._config.amp_enabled
 
@@ -569,14 +572,18 @@ class DeepSpeedEngine(Module):
 
         for p in self.module.parameters():
             if torch.is_tensor(p) and is_replicated(p):
+                if self.precision() == torch.bfloat16:
+                    p = p.float()
                 dist.broadcast(p,
                                self.broadcast_src_rank,
                                group=self.data_parallel_group)
+                if self.precision() == torch.bfloat16:
+                    p = p.bfloat16()
 
     def _configure_distributed_model(self, model):
         self.module = model
         if self.fp16_enabled():
-            self.module.half()
+            self.module.to(self.precision())
 
         if not self.dont_change_device:
             self.module.to(self.device)
@@ -714,7 +721,8 @@ class DeepSpeedEngine(Module):
         initial_dynamic_scale = self.initial_dynamic_scale()
         dynamic_loss_args = self.dynamic_loss_scale_args()
         clip_grad = self.gradient_clipping()
-        if is_fp16_fused_supported_optimizer(optimizer):
+        if isinstance(optimizer,
+                      FusedAdam) or self.optimizer_name() == ONEBIT_ADAM_OPTIMIZER:
             if self.dynamic_loss_scale():
                 log_dist('Creating fp16 optimizer with dynamic loss scale', ranks=[0])
                 timers = self.timers if self.wall_clock_breakdown() else None
@@ -772,7 +780,8 @@ class DeepSpeedEngine(Module):
                 max_elements_per_comm=self.zero_reduce_bucket_size(),
                 dp_process_group=self.data_parallel_group,
                 elastic_checkpoint=self.zero_elastic_checkpoint(),
-                mpu=self.mpu)
+                mpu=self.mpu,
+                precision=self.precision())
         elif zero_stage == ZERO_OPTIMIZATION_GRADIENTS:
             optimizer = FP16_DeepSpeedZeroOptimizer(
                 optimizer,
@@ -791,7 +800,8 @@ class DeepSpeedEngine(Module):
                 mpu=self.mpu,
                 postscale_gradients=self.postscale_gradients(),
                 gradient_predivide_factor=self.gradient_predivide_factor(),
-                gradient_accumulation_steps=self.gradient_accumulation_steps())
+                gradient_accumulation_steps=self.gradient_accumulation_steps(),
+                precision=self.precision())
         elif zero_stage == ZERO_OPTIMIZATION_WEIGHTS:
             print("Initializing ZeRO Stage 3") if dist.get_rank() == 0 else None
             from deepspeed.runtime.zero.stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
@@ -979,6 +989,7 @@ class DeepSpeedEngine(Module):
 
         # Communicate only at gradient accumulation boundaries
         elif self.is_gradient_accumulation_boundary():
+            # TODO: communication in fp16 / fp32
             if self.zero_optimization_stage(
             ) == ZERO_OPTIMIZATION_OPTIMIZER_STATES and self.zero_reduce_scatter():
                 self.optimizer.reduce_scatter_gradients(
