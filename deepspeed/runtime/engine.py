@@ -61,6 +61,7 @@ def split_half_float_double_csr(tensors):
         "torch.cuda.HalfTensor",
         "torch.cuda.FloatTensor",
         "torch.cuda.DoubleTensor",
+        "torch.cuda.BFloat16Tensor",
         CSRTensor.type()
     ]
     buckets = []
