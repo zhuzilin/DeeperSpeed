@@ -474,7 +474,7 @@ class PipelineEngine(DeepSpeedEngine):
         presents_shape = presents_shape_tensor.tolist()
 
         if self.is_last_stage():
-            if self.precision() == torch.bfloat16:
+            if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
                 logits = logits.to(torch.float)
                 presents = presents.to(torch.float)
             dist.broadcast(tensor=logits,
@@ -497,7 +497,8 @@ class PipelineEngine(DeepSpeedEngine):
             dist.broadcast(tensor=presents,
                            src=src_rank,
                            group=self.grid.get_pipe_parallel_group())
-            logits, presents = logits.to(self.precision()), presents.to(self.precision())
+            if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
+                logits, presents = logits.to(self.precision()), presents.to(self.precision())
             logits = logits.clone().detach()
             presents = presents.clone().detach()
 
@@ -1002,7 +1003,7 @@ class PipelineEngine(DeepSpeedEngine):
         if isinstance(self.pipe_recv_buf, torch.Tensor):
             p2p.recv(self.pipe_recv_buf, self.prev_stage)
             recvd = self.pipe_recv_buf.clone().detach()
-            if self.precision() == torch.bfloat16:
+            if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
                 # the communicated tensors will be in fp32 - so convert them back to bf16
                 recvd.to(self.precision())
             recvd.requires_grad = recvd.is_floating_point()
@@ -1020,7 +1021,7 @@ class PipelineEngine(DeepSpeedEngine):
                     buffer = self.meta_buffer
 
                 p2p.recv(buffer, self.prev_stage)
-                if self.precision() == torch.bfloat16:
+                if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
                     # the communicated tensors will be in fp32 - so convert them back to bf16
                     buffer.to(self.precision())
                 recvd[idx] = buffer.clone().detach()

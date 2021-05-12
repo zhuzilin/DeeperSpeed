@@ -101,6 +101,7 @@ def print_configuration(args, name):
 class DeepSpeedEngine(Module):
     r"""DeepSpeed engine for training.
     """
+
     def __init__(self,
                  args,
                  model,
@@ -534,9 +535,10 @@ class DeepSpeedEngine(Module):
             args.deepspeed_config = args.deepscale_config
 
         assert "LOCAL_RANK" in os.environ, "DeepSpeed requires the LOCAL_RANK environment variable, it is set by the deepspeed launcher, " \
-            "deepspeed.init_distributed, or the torch.distributed launcher. If using a different launcher please ensure LOCAL_RANK is set prior to initializing deepspeed."
+                                           "deepspeed.init_distributed, or the torch.distributed launcher. If using a different launcher please ensure LOCAL_RANK is set prior to initializing deepspeed."
         if hasattr(args, 'local_rank') and args.local_rank != None:
-            assert isinstance(args.local_rank, int), f"args.local_rank of {args.local_rank} is an unknown type {type(args.local_rank)}"
+            assert isinstance(args.local_rank,
+                              int), f"args.local_rank of {args.local_rank} is an unknown type {type(args.local_rank)}"
             if args.local_rank >= 0:
                 env_local_rank = int(os.environ.get("LOCAL_RANK"))
                 assert env_local_rank == args.local_rank, \
@@ -573,13 +575,13 @@ class DeepSpeedEngine(Module):
 
         for p in self.module.parameters():
             if torch.is_tensor(p) and is_replicated(p):
-                if self.precision() == torch.bfloat16:
-                    p = p.float()
+                if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
+                    p.data = p.float().data
                 dist.broadcast(p,
                                self.broadcast_src_rank,
                                group=self.data_parallel_group)
-                if self.precision() == torch.bfloat16:
-                    p = p.bfloat16()
+                if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
+                    p.data = p.to(self.precision()).data
 
     def _configure_distributed_model(self, model):
         self.module = model
@@ -1155,7 +1157,7 @@ class DeepSpeedEngine(Module):
                 self.lr_scheduler.step(**(lr_kwargs or {}))
 
         if report_progress and (self.global_steps + 1) % self.steps_per_print() == 0:
-                self._report_progress(self.global_steps + 1)
+            self._report_progress(self.global_steps + 1)
         self.timers('_step_check_overflow').stop()
 
         self.global_steps += 1
@@ -1825,8 +1827,8 @@ class DeepSpeedEngine(Module):
                         else:
                             state_dict[key] = param.detach().cpu()
                             shared_weights[data_ptr_id] = key
-                        #print(f"param {name} {param.shape}")
-                        #print(f"param {key} {param.shape} {state_dict[key].storage().data_ptr()}")
+                        # print(f"param {name} {param.shape}")
+                        # print(f"param {key} {param.shape} {state_dict[key].storage().data_ptr()}")
 
                     # now buffers - not sure if need to take care of potentially shared weights here
                     for name, buf in module.named_buffers(recurse=False):

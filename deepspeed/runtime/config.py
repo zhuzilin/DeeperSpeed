@@ -179,9 +179,8 @@ def get_zero_reduce_scatter(param_dict):
 
 def get_allreduce_always_fp32(param_dict):
     if get_fp16_type(param_dict) == "bfloat16":
-        # default allreduce_always_fp32 to True if dtype == bf16, as nccl can't communicate bf16
-        # tensors
-        return True
+        # default allreduce_always_fp32 to True if dtype == bf16, as nccl can't communicate bf16 tensors
+        return get_scalar_param(param_dict, FP32_ALLREDUCE, FP32_ALLREDUCE_DEFAULT_BF16)
     return get_scalar_param(param_dict, FP32_ALLREDUCE, FP32_ALLREDUCE_DEFAULT)
 
 

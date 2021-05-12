@@ -202,6 +202,7 @@ FP32 Allreduce should be enabled as:
 '''
 FP32_ALLREDUCE = "fp32_allreduce"
 FP32_ALLREDUCE_DEFAULT = False
+FP32_ALLREDUCE_DEFAULT_BF16 = True  # if dtype is bf16 - default to fp32 communication
 
 #########################################
 # Scale/predivide gradients before allreduce
