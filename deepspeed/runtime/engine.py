@@ -26,6 +26,7 @@ from deepspeed.runtime.fp16.unfused_optimizer import FP16_UnfusedOptimizer
 from deepspeed.runtime.config import DeepSpeedConfig, DEEPSPEED_OPTIMIZERS, \
     ADAM_OPTIMIZER, ADAMW_OPTIMIZER, LAMB_OPTIMIZER, ONEBIT_ADAM_OPTIMIZER, ONEBIT_LAMB_OPTIMIZER, \
     TORCH_ADAM_PARAM, ADAM_W_MODE, ADAM_W_MODE_DEFAULT
+from deepspeed.runtime.compressed_ar import compressed_all_reduce
 
 from deepspeed.runtime.dataloader import DeepSpeedDataLoader
 from deepspeed.runtime.constants import \
@@ -138,6 +139,7 @@ class DeepSpeedEngine(Module):
         self.store_gradients = False
         self.store_gradients_cpu = False
         self.stored_gradients = None
+        self.bf16_compressed_allreduce = True # hardcode for now
 
         if dist_init_required is None:
             dist_init_required = not dist.is_initialized()
@@ -577,6 +579,7 @@ class DeepSpeedEngine(Module):
             if torch.is_tensor(p) and is_replicated(p):
                 if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
                     p.data = p.float().data
+                    
                 dist.broadcast(p,
                                self.broadcast_src_rank,
                                group=self.data_parallel_group)
@@ -1290,14 +1293,17 @@ class DeepSpeedEngine(Module):
 
         tensor_to_allreduce = tensor
 
-        if self.allreduce_always_fp32():
+        if self.allreduce_always_fp32() and not self.bf16_compressed_allreduce:
             tensor_to_allreduce = tensor.float()
 
         if self.postscale_gradients():
             if self.gradient_predivide_factor() != 1.0:
                 tensor_to_allreduce.mul_(1. / self.gradient_predivide_factor())
 
-            dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
+            if self.bf16_compressed_allreduce and self.precision == torch.bfloat16:
+                compressed_all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
+            else:
+                dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
 
             if self.gradient_average:
                 if self.gradient_predivide_factor() != self.dp_world_size:
@@ -1305,9 +1311,12 @@ class DeepSpeedEngine(Module):
                                              self.dp_world_size)
         else:
             tensor_to_allreduce.div_(self.dp_world_size)
-            dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
+            if self.bf16_compressed_allreduce and self.precision == torch.bfloat16:
+                compressed_all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
+            else:
+                dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
 
-        if self.allreduce_always_fp32() and tensor is not tensor_to_allreduce:
+        if self.allreduce_always_fp32() and tensor is not tensor_to_allreduce and not self.bf16_compressed_allreduce:
             tensor.copy_(tensor_to_allreduce)
 
         return tensor
