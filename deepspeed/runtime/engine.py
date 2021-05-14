@@ -26,6 +26,7 @@ from deepspeed.runtime.fp16.unfused_optimizer import FP16_UnfusedOptimizer
 from deepspeed.runtime.config import DeepSpeedConfig, DEEPSPEED_OPTIMIZERS, \
     ADAM_OPTIMIZER, ADAMW_OPTIMIZER, LAMB_OPTIMIZER, ONEBIT_ADAM_OPTIMIZER, ONEBIT_LAMB_OPTIMIZER, \
     TORCH_ADAM_PARAM, ADAM_W_MODE, ADAM_W_MODE_DEFAULT
+from deepspeed.runtime.comm import compressed_all_reduce
 
 from deepspeed.runtime.dataloader import DeepSpeedDataLoader
 from deepspeed.runtime.constants import \
@@ -61,6 +62,7 @@ def split_half_float_double_csr(tensors):
         "torch.cuda.HalfTensor",
         "torch.cuda.FloatTensor",
         "torch.cuda.DoubleTensor",
+        "torch.cuda.BFloat16Tensor",
         CSRTensor.type()
     ]
     buckets = []
@@ -100,6 +102,7 @@ def print_configuration(args, name):
 class DeepSpeedEngine(Module):
     r"""DeepSpeed engine for training.
     """
+
     def __init__(self,
                  args,
                  model,
@@ -136,6 +139,7 @@ class DeepSpeedEngine(Module):
         self.store_gradients = False
         self.store_gradients_cpu = False
         self.stored_gradients = None
+        self.bf16_compressed_allreduce = False # hardcode for now - it's not really working
 
         if dist_init_required is None:
             dist_init_required = not dist.is_initialized()
@@ -397,6 +401,9 @@ class DeepSpeedEngine(Module):
     def fp16_enabled(self):
         return self._config.fp16_enabled
 
+    def precision(self):
+        return self._config.precision
+
     def amp_enabled(self):
         return self._config.amp_enabled
 
@@ -530,9 +537,10 @@ class DeepSpeedEngine(Module):
             args.deepspeed_config = args.deepscale_config
 
         assert "LOCAL_RANK" in os.environ, "DeepSpeed requires the LOCAL_RANK environment variable, it is set by the deepspeed launcher, " \
-            "deepspeed.init_distributed, or the torch.distributed launcher. If using a different launcher please ensure LOCAL_RANK is set prior to initializing deepspeed."
+                                           "deepspeed.init_distributed, or the torch.distributed launcher. If using a different launcher please ensure LOCAL_RANK is set prior to initializing deepspeed."
         if hasattr(args, 'local_rank') and args.local_rank != None:
-            assert isinstance(args.local_rank, int), f"args.local_rank of {args.local_rank} is an unknown type {type(args.local_rank)}"
+            assert isinstance(args.local_rank,
+                              int), f"args.local_rank of {args.local_rank} is an unknown type {type(args.local_rank)}"
             if args.local_rank >= 0:
                 env_local_rank = int(os.environ.get("LOCAL_RANK"))
                 assert env_local_rank == args.local_rank, \
@@ -569,14 +577,19 @@ class DeepSpeedEngine(Module):
 
         for p in self.module.parameters():
             if torch.is_tensor(p) and is_replicated(p):
+                if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
+                    p.data = p.float().data
+                    
                 dist.broadcast(p,
                                self.broadcast_src_rank,
                                group=self.data_parallel_group)
+                if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
+                    p.data = p.to(self.precision()).data
 
     def _configure_distributed_model(self, model):
         self.module = model
         if self.fp16_enabled():
-            self.module.half()
+            self.module.to(self.precision())
 
         if not self.dont_change_device:
             self.module.to(self.device)
@@ -772,7 +785,8 @@ class DeepSpeedEngine(Module):
                 max_elements_per_comm=self.zero_reduce_bucket_size(),
                 dp_process_group=self.data_parallel_group,
                 elastic_checkpoint=self.zero_elastic_checkpoint(),
-                mpu=self.mpu)
+                mpu=self.mpu,
+                precision=self.precision())
         elif zero_stage == ZERO_OPTIMIZATION_GRADIENTS:
             optimizer = FP16_DeepSpeedZeroOptimizer(
                 optimizer,
@@ -791,7 +805,8 @@ class DeepSpeedEngine(Module):
                 mpu=self.mpu,
                 postscale_gradients=self.postscale_gradients(),
                 gradient_predivide_factor=self.gradient_predivide_factor(),
-                gradient_accumulation_steps=self.gradient_accumulation_steps())
+                gradient_accumulation_steps=self.gradient_accumulation_steps(),
+                precision=self.precision())
         elif zero_stage == ZERO_OPTIMIZATION_WEIGHTS:
             print("Initializing ZeRO Stage 3") if dist.get_rank() == 0 else None
             from deepspeed.runtime.zero.stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
@@ -979,6 +994,7 @@ class DeepSpeedEngine(Module):
 
         # Communicate only at gradient accumulation boundaries
         elif self.is_gradient_accumulation_boundary():
+            # TODO: communication in fp16 / fp32
             if self.zero_optimization_stage(
             ) == ZERO_OPTIMIZATION_OPTIMIZER_STATES and self.zero_reduce_scatter():
                 self.optimizer.reduce_scatter_gradients(
@@ -1143,7 +1159,7 @@ class DeepSpeedEngine(Module):
                 self.lr_scheduler.step(**(lr_kwargs or {}))
 
         if report_progress and (self.global_steps + 1) % self.steps_per_print() == 0:
-                self._report_progress(self.global_steps + 1)
+            self._report_progress(self.global_steps + 1)
         self.timers('_step_check_overflow').stop()
 
         self.global_steps += 1
@@ -1276,14 +1292,16 @@ class DeepSpeedEngine(Module):
 
         tensor_to_allreduce = tensor
 
-        if self.allreduce_always_fp32():
+        if self.allreduce_always_fp32() and not self.bf16_compressed_allreduce:
             tensor_to_allreduce = tensor.float()
 
         if self.postscale_gradients():
             if self.gradient_predivide_factor() != 1.0:
                 tensor_to_allreduce.mul_(1. / self.gradient_predivide_factor())
-
-            dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
+            if self.bf16_compressed_allreduce and self.precision() == torch.bfloat16:
+                compressed_all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
+            else:
+                dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
 
             if self.gradient_average:
                 if self.gradient_predivide_factor() != self.dp_world_size:
@@ -1291,9 +1309,12 @@ class DeepSpeedEngine(Module):
                                              self.dp_world_size)
         else:
             tensor_to_allreduce.div_(self.dp_world_size)
-            dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
+            if self.bf16_compressed_allreduce and self.precision() == torch.bfloat16:
+                compressed_all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
+            else:
+                dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
 
-        if self.allreduce_always_fp32() and tensor is not tensor_to_allreduce:
+        if self.allreduce_always_fp32() and tensor is not tensor_to_allreduce and not self.bf16_compressed_allreduce:
             tensor.copy_(tensor_to_allreduce)
 
         return tensor
@@ -1813,8 +1834,8 @@ class DeepSpeedEngine(Module):
                         else:
                             state_dict[key] = param.detach().cpu()
                             shared_weights[data_ptr_id] = key
-                        #print(f"param {name} {param.shape}")
-                        #print(f"param {key} {param.shape} {state_dict[key].storage().data_ptr()}")
+                        # print(f"param {name} {param.shape}")
+                        # print(f"param {key} {param.shape} {state_dict[key].storage().data_ptr()}")
 
                     # now buffers - not sure if need to take care of potentially shared weights here
                     for name, buf in module.named_buffers(recurse=False):

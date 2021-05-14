@@ -2,6 +2,7 @@
 Copyright (c) Microsoft Corporation
 Licensed under the MIT license.
 """
+import torch
 
 #############################################
 # Routes
@@ -128,6 +129,18 @@ FP16 = "fp16"
 FP16_ENABLED = "enabled"
 FP16_ENABLED_DEFAULT = False
 
+FP16_TYPE = "type"
+FP16_TYPE_DEFAULT = "fp16"
+PRECISION_TYPES = {
+    "fp32": torch.float32,
+    "float32": torch.float32,
+    "float": torch.float32,
+    "fp16": torch.half,
+    "float16": torch.half,
+    "half": torch.half,
+    "bfloat16": torch.bfloat16
+}
+
 # FP16 loss scale, zero means using dynamic scaling
 FP16_LOSS_SCALE = "loss_scale"
 FP16_LOSS_SCALE_DEFAULT = 0
@@ -189,6 +202,7 @@ FP32 Allreduce should be enabled as:
 '''
 FP32_ALLREDUCE = "fp32_allreduce"
 FP32_ALLREDUCE_DEFAULT = False
+FP32_ALLREDUCE_DEFAULT_BF16 = True  # if dtype is bf16 - default to fp32 communication
 
 #########################################
 # Scale/predivide gradients before allreduce

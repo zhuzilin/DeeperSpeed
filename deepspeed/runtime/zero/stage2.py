@@ -95,7 +95,8 @@ class FP16_DeepSpeedZeroOptimizer(object):
                  allreduce_always_fp32=False,
                  postscale_gradients=True,
                  gradient_predivide_factor=1.0,
-                 gradient_accumulation_steps=1):
+                 gradient_accumulation_steps=1,
+                 precision=torch.half):
 
         if dist.get_rank() == 0:
             logger.info(f"Reduce bucket size {reduce_bucket_size}")
@@ -113,6 +114,9 @@ class FP16_DeepSpeedZeroOptimizer(object):
         if not torch.cuda.is_available:
             raise SystemError("Cannot use fp16 without CUDA.")
         self.optimizer = init_optimizer
+        self.precision = precision
+        self.fp32_allreduce = True if self.precision == torch.bfloat16 else allreduce_always_fp32
+
 
         # Load pre-built or JIT compile (un)flatten ops
         util_ops = UtilsBuilder().load()
@@ -144,14 +148,12 @@ class FP16_DeepSpeedZeroOptimizer(object):
 
         self.overflow = False
         self.clip_grad = clip_grad
-        self.allreduce_always_fp32 = allreduce_always_fp32
         self.gradient_predivide_factor = gradient_predivide_factor
         self.postscale_gradients = postscale_gradients
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.micro_step_id = 0
 
         if self.reduce_scatter:
-            assert not self.allreduce_always_fp32, "allreduce_always_fp32 is not yet supported with ZeRO-2 with reduce scatter enabled"
             assert self.gradient_predivide_factor == 1.0, "gradient_predivide_factor != 1.0 is not yet supported with ZeRO-2 with reduce scatter enabled"
             assert self.postscale_gradients, "pre-scale gradients is not yet supported with ZeRO-2 with reduce scatter enabled"
 
@@ -306,10 +308,10 @@ class FP16_DeepSpeedZeroOptimizer(object):
             self.grad_position = {}
             self.temp_grad_buffer_for_cpu_offload = torch.zeros(
                 largest_param_numel,
-                device=self.device).half().pin_memory()
+                device=self.device).to(self.precision).pin_memory()
             self.temp_grad_buffer_for_gpu_offload = torch.zeros(
                 largest_param_numel,
-                device=torch.cuda.current_device()).half()
+                device=torch.cuda.current_device()).to(self.precision)
 
             for i, params_group in enumerate(self.fp16_groups):
                 self.get_grad_position(i,
@@ -654,13 +656,13 @@ class FP16_DeepSpeedZeroOptimizer(object):
 
         tensor_to_allreduce = tensor
 
-        if self.allreduce_always_fp32:
+        if self.fp32_allreduce:
             tensor_to_allreduce = tensor.float()
 
         if self.postscale_gradients:
             if self.gradient_predivide_factor != 1.0:
                 tensor_to_allreduce.mul_(1. / self.gradient_predivide_factor)
-
+    
             dist.all_reduce(tensor_to_allreduce, group=self.dp_process_group)
 
             if self.gradient_predivide_factor != dp_world_size:
@@ -669,7 +671,7 @@ class FP16_DeepSpeedZeroOptimizer(object):
             tensor_to_allreduce.div_(dp_world_size)
             dist.all_reduce(tensor_to_allreduce, group=self.dp_process_group)
 
-        if self.allreduce_always_fp32 and tensor is not tensor_to_allreduce:
+        if self.fp32_allreduce and tensor is not tensor_to_allreduce:
             tensor.copy_(tensor_to_allreduce)
 
         return tensor
@@ -730,6 +732,8 @@ class FP16_DeepSpeedZeroOptimizer(object):
             for dst, bucket_offset, numel in rank_and_offsets:
                 grad_slice = tensor.narrow(0, int(bucket_offset), int(numel))
                 dst_rank = _get_global_rank(self.dp_process_group, dst)
+                if self.fp32_allreduce:
+                    grad_slice = grad_slice.float()
                 async_handle = dist.reduce(grad_slice,
                                            dst=dst_rank,
                                            group=self.dp_process_group,
@@ -738,6 +742,7 @@ class FP16_DeepSpeedZeroOptimizer(object):
 
             for handle in async_handles:
                 handle.wait()
+                grad_slice = grad_slice.to(self.precision)
 
     ##############################################################################
     ############################# CPU Offload Methods#############################
@@ -890,12 +895,12 @@ class FP16_DeepSpeedZeroOptimizer(object):
         # Sum across all model parallel GPUs.
         total_norm_cuda = torch.cuda.FloatTensor([float(total_norm)])
 
-        torch.distributed.all_reduce(total_norm_cuda,
-                                     op=torch.distributed.ReduceOp.SUM,
+        dist.all_reduce(total_norm_cuda,
+                                     op=dist.ReduceOp.SUM,
                                      group=self.dp_process_group)
 
         self._model_parallel_all_reduce(tensor=total_norm_cuda,
-                                        op=torch.distributed.ReduceOp.SUM)
+                                        op=dist.ReduceOp.SUM)
 
         total_norm = total_norm_cuda[0].item()**(1. / norm_type)
 
@@ -1101,7 +1106,7 @@ class FP16_DeepSpeedZeroOptimizer(object):
             stream = torch.cuda.current_stream()
 
         with torch.cuda.stream(stream):
-            allreduced = self.allreduce_bucket(small_bucket, rank=rank, log=log)
+            allreduced = self.allreduce_bucket(small_bucket, rank=rank, log=log, allreduce_always_fp32=self.fp32_allreduce)
             if rank is None or rank == dist.get_rank(group=self.dp_process_group):
                 for buf, synced in zip(small_bucket, self.unflatten(allreduced, small_bucket)):
                     buf.copy_(synced)
@@ -1214,9 +1219,13 @@ class FP16_DeepSpeedZeroOptimizer(object):
         if self.model_parallel_group is None:
             pass
         else:
-            torch.distributed.all_reduce(tensor=tensor,
+            if self.fp32_allreduce:
+                tensor = tensor.float()
+            dist.all_reduce(tensor=tensor,
                                          op=op,
                                          group=self.model_parallel_group)
+            if self.fp32_allreduce:
+                tensor = tensor.to(self.precision)
 
     def get_grad_norm_direct(self, gradients, params, norm_type=2):
         """Clips gradient norm of an iterable of parameters.
@@ -1239,13 +1248,13 @@ class FP16_DeepSpeedZeroOptimizer(object):
         if norm_type == inf:
             total_norm = max(g.data.abs().max() for g in gradients)
             total_norm_cuda = torch.cuda.FloatTensor([float(total_norm)])
-            torch.distributed.all_reduce(total_norm_cuda,
-                                         op=torch.distributed.ReduceOp.MAX,
+            dist.all_reduce(total_norm_cuda,
+                                         op=dist.ReduceOp.MAX,
                                          group=self.dp_process_group)
 
             # Take max across all GPUs.
             self._model_parallel_all_reduce(tensor=total_norm_cuda,
-                                            op=torch.distributed.ReduceOp.MAX)
+                                            op=dist.ReduceOp.MAX)
             total_norm = total_norm_cuda[0].item()
         else:
             total_norm = 0.0
@@ -1258,12 +1267,12 @@ class FP16_DeepSpeedZeroOptimizer(object):
             # Sum across all model parallel GPUs.
             total_norm_cuda = torch.cuda.FloatTensor([float(total_norm)])
 
-            torch.distributed.all_reduce(total_norm_cuda,
-                                         op=torch.distributed.ReduceOp.SUM,
+            dist.all_reduce(total_norm_cuda,
+                                         op=dist.ReduceOp.SUM,
                                          group=self.dp_process_group)
 
             self._model_parallel_all_reduce(tensor=total_norm_cuda,
-                                            op=torch.distributed.ReduceOp.SUM)
+                                            op=dist.ReduceOp.SUM)
 
             total_norm = total_norm_cuda[0].item()**(1. / norm_type)
 
@@ -1494,11 +1503,18 @@ class FP16_DeepSpeedZeroOptimizer(object):
                         0,
                         shard_id * shard_size,
                         num_elements).detach()
+                    if self.fp32_allreduce:
+                        curr_shard = curr_shard.float()
                     shard_list.append(curr_shard)
 
                 dist.all_gather(shard_list,
                                 shard_list[partition_id],
                                 group=self.dp_process_group)
+                
+                if self.fp32_allreduce:
+                    for i in range(len(shard_list)):
+                        shard_list[i] = shard_list[i].to(self.precision)
+
         self.stop_timers([OPTIMIZER_ALLGATHER])
 
         # TODO: we probably don't need this? just to be safe
@@ -1558,8 +1574,8 @@ class FP16_DeepSpeedZeroOptimizer(object):
             overflow = self.local_overflow if self.cpu_offload else self.has_overflow_partitioned_grads_serial(
             )
             overflow_gpu = torch.cuda.ByteTensor([overflow])
-            torch.distributed.all_reduce(overflow_gpu,
-                                         op=torch.distributed.ReduceOp.MAX,
+            dist.all_reduce(overflow_gpu,
+                                         op=dist.ReduceOp.MAX,
                                          group=self.dp_process_group)
 
         else:
@@ -1574,7 +1590,7 @@ class FP16_DeepSpeedZeroOptimizer(object):
         # Since each model parallel GPU carries only part of the model,
         # make sure overflow flag is synced across all the model parallel GPUs
         self._model_parallel_all_reduce(tensor=overflow_gpu,
-                                        op=torch.distributed.ReduceOp.MAX)
+                                        op=dist.ReduceOp.MAX)
 
         overflow = overflow_gpu[0].item()
         return bool(overflow)
@@ -1866,7 +1882,7 @@ class FP16_DeepSpeedZeroOptimizer(object):
 
 def _handle_overflow(cpu_sum, x, i):
     import math
-    rank = torch.distributed.get_rank()
+    rank = dist.get_rank()
     if rank == 0:
         t_i = -1
         for v_i, v in enumerate(x.data.contiguous().view(-1)):

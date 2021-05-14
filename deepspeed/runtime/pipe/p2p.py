@@ -28,31 +28,37 @@ def _is_valid_send_recv(src_stage, dest_stage):
     "Functionality currently limited to send and receive between adjacent ranks only"
 
 
-def send(tensor, dest_stage, async_op=False):
+def send(tensor, dest_stage, async_op=False, fp32_comm=False):
     global _groups
 
     async_op = False
     src_stage = _grid.get_stage_id()
     _is_valid_send_recv(src_stage, dest_stage)
-
+    tensor_to_broadcast = tensor
+    if fp32_comm:
+        tensor_to_broadcast = tensor_to_broadcast.float()
     group = _get_send_recv_group(src_stage, dest_stage)
     src_rank = _grid.stage_to_global(stage_id=src_stage)
+    dist.broadcast(tensor_to_broadcast, src_rank, group=group, async_op=async_op)
+    if fp32_comm and tensor is not tensor_to_broadcast:
+        tensor.copy_(tensor_to_broadcast)
 
-    return dist.broadcast(tensor, src_rank, group=group, async_op=async_op)
 
-
-def recv(tensor, src_stage, async_op=False):
+def recv(tensor, src_stage, async_op=False, fp32_comm=False):
 
     global _groups
 
     async_op = False
     dest_stage = _grid.get_stage_id()
     _is_valid_send_recv(src_stage, dest_stage)
-
+    tensor_to_broadcast = tensor
+    if fp32_comm:
+        tensor_to_broadcast = tensor_to_broadcast.float()
     group = _get_send_recv_group(src_stage, dest_stage)
     src_rank = _grid.stage_to_global(stage_id=src_stage)
-
-    return dist.broadcast(tensor, src_rank, group=group, async_op=async_op)
+    dist.broadcast(tensor_to_broadcast, src_rank, group=group, async_op=async_op)
+    if fp32_comm and tensor is not tensor_to_broadcast:
+        tensor.copy_(tensor_to_broadcast)
 
 
 def barrier(stage_id):

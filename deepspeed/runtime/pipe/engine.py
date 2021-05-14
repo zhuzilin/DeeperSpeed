@@ -480,6 +480,9 @@ class PipelineEngine(DeepSpeedEngine):
         presents_shape = presents_shape_tensor.tolist()
 
         if self.is_last_stage():
+            if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
+                logits = logits.to(torch.float)
+                presents = presents.to(torch.float)
             dist.broadcast(tensor=logits,
                            src=self.global_rank,
                            group=self.mpu.get_pipe_parallel_group())
@@ -488,9 +491,9 @@ class PipelineEngine(DeepSpeedEngine):
                            group=self.mpu.get_pipe_parallel_group())
 
         else:
-            logits = torch.zeros(logits_shape, dtype=torch.half if self.fp16_enabled() else torch.float32).to(
+            logits = torch.zeros(logits_shape, dtype=self.precision() if self.precision() != torch.bfloat16 else torch.float32).to(
                 self.device)
-            presents = torch.zeros(presents_shape, dtype=torch.half if self.fp16_enabled() else torch.float32).to(
+            presents = torch.zeros(presents_shape, dtype=self.precision() if self.precision() != torch.bfloat16 else torch.float32).to(
                 self.device)
             src_rank = self.grid.stage_to_global(self.num_stages - 1)
             assert src_rank in self.grid.pp_group
@@ -500,6 +503,8 @@ class PipelineEngine(DeepSpeedEngine):
             dist.broadcast(tensor=presents,
                            src=src_rank,
                            group=self.grid.get_pipe_parallel_group())
+            if self.precision() == torch.bfloat16 and self.allreduce_always_fp32():
+                logits, presents = logits.to(self.precision()), presents.to(self.precision())
             logits = logits.clone().detach()
             presents = presents.clone().detach()
 
@@ -924,10 +929,10 @@ class PipelineEngine(DeepSpeedEngine):
             self._send_tensor_meta(outputs, self.next_stage)
 
         if isinstance(outputs, torch.Tensor):
-            p2p.send(outputs, self.next_stage)
+            p2p.send(outputs, self.next_stage, fp32_comm=self.allreduce_always_fp32())
         elif isinstance(outputs, tuple):
             for idx, buffer in enumerate(outputs):
-                p2p.send(buffer, self.next_stage)
+                p2p.send(buffer, self.next_stage, fp32_comm=self.allreduce_always_fp32())
         else:
             raise NotImplementedError('Could not send output of type '
                                       f'{type(outputs)}')
@@ -970,13 +975,13 @@ class PipelineEngine(DeepSpeedEngine):
 
         if isinstance(inputs, torch.Tensor):
             assert inputs.grad is not None
-            p2p.send(inputs.grad, self.prev_stage)
+            p2p.send(inputs.grad, self.prev_stage, fp32_comm=self.allreduce_always_fp32())
         else:
             # XXX terrible hacky branch
             if self.is_grad_partitioned:
                 # First two sends are partitioned gradient
-                p2p.send(inputs[0], self.prev_stage)
-                p2p.send(inputs[1], self.prev_stage)
+                p2p.send(inputs[0], self.prev_stage, fp32_comm=self.allreduce_always_fp32())
+                p2p.send(inputs[1], self.prev_stage, fp32_comm=self.allreduce_always_fp32())
                 # XXX hack hack hack
                 # p2p.send(inputs[2].grad, self.prev_stage)
             else:
@@ -986,7 +991,7 @@ class PipelineEngine(DeepSpeedEngine):
                         assert buffer.grad is None
                         continue
                     assert buffer.grad is not None
-                    p2p.send(buffer.grad, self.prev_stage)
+                    p2p.send(buffer.grad, self.prev_stage, fp32_comm=self.allreduce_always_fp32())
 
         # We can free up the input buffer now
         self.pipe_buffers['inputs'][buffer_id] = None
@@ -1004,7 +1009,7 @@ class PipelineEngine(DeepSpeedEngine):
             self.pipe_recv_buf = self._recv_tensor_meta(self.prev_stage)
 
         if isinstance(self.pipe_recv_buf, torch.Tensor):
-            p2p.recv(self.pipe_recv_buf, self.prev_stage)
+            p2p.recv(self.pipe_recv_buf, self.prev_stage, fp32_comm=self.allreduce_always_fp32())
             recvd = self.pipe_recv_buf.clone().detach()
             recvd.requires_grad = recvd.is_floating_point()
         else:
@@ -1020,7 +1025,7 @@ class PipelineEngine(DeepSpeedEngine):
                                                        device=self.device)
                     buffer = self.meta_buffer
 
-                p2p.recv(buffer, self.prev_stage)
+                p2p.recv(buffer, self.prev_stage, fp32_comm=self.allreduce_always_fp32())
                 recvd[idx] = buffer.clone().detach()
 
             # NCCL does not like to send torch.BoolTensor types, so un-cast the
@@ -1066,7 +1071,7 @@ class PipelineEngine(DeepSpeedEngine):
                 self.grad_layer = self._allocate_buffers(sizes, num_buffers=1)[0]
 
         if isinstance(self.grad_layer, torch.Tensor):
-            p2p.recv(self.grad_layer, self.next_stage)
+            p2p.recv(self.grad_layer, self.next_stage, fp32_comm=self.allreduce_always_fp32())
         else:
             assert isinstance(outputs, tuple)
             for idx, buffer in enumerate(self.grad_layer):
@@ -1075,7 +1080,7 @@ class PipelineEngine(DeepSpeedEngine):
                     buffer.data = torch.zeros(buffer.size(),
                                               dtype=torch.long,
                                               device=self.device)
-                p2p.recv(buffer, self.next_stage)
+                p2p.recv(buffer, self.next_stage, fp32_comm=self.allreduce_always_fp32())
 
         if self.wall_clock_breakdown():
             self.timers('pipe_recv_grad').stop()
@@ -1128,13 +1133,9 @@ class PipelineEngine(DeepSpeedEngine):
             A tensor from torch.zeros() allocated on self.device.
         """
 
-        if fp16 is None:
-            fp16 = self.fp16_enabled()
+        precision = self.precision() if self.precision() != torch.bfloat16 else torch.float32
+        return torch.zeros(shape, dtype=precision, device=self.device, **kwargs)
 
-        if fp16:
-            return torch.zeros(shape, dtype=torch.half, device=self.device, **kwargs)
-        else:
-            return torch.zeros(shape, device=self.device, **kwargs)
 
     def _allocate_buffer(self, shape, num_buffers=-1, **kwargs):
         buffers = []

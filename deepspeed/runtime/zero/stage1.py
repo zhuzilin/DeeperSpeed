@@ -120,12 +120,20 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                  allgather_size=500000000,
                  clip_grad=0.0,
                  max_elements_per_comm=5e8,
-                 elastic_checkpoint=True):
+                 elastic_checkpoint=True,
+                 precision=torch.half):
 
         # Load pre-built or JIT compile (un)flatten ops
         util_ops = UtilsBuilder().load()
         self.flatten = util_ops.flatten
         self.unflatten = util_ops.unflatten
+
+        # set precision
+        self.precision = precision
+        if self.precision == torch.bfloat16:
+            self.fp32_allreduce = True
+        else:
+            self.fp32_allreduce = False
 
         if dp_process_group is not None and partition_size is not None:
             raise ValueError("Cannot specify both dp_process_group "
@@ -622,6 +630,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                                  postscale_gradients,
                                  gradient_predivide_factor,
                                  gradient_average):
+
         world_size = dist.get_world_size(group=self.dp_process_group)
         local_rank = dist.get_rank(group=self.dp_process_group)
 
@@ -634,7 +643,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                     comm_tensor_list=self.params_in_rank_sub_partitions[i][rank],
                     comm_param_offsets=self.params_in_rank_sub_partitions_offsets[i]
                     [rank],
-                    dtype=torch.half,
+                    dtype=self.precision,
                     default_device=self.default_device,
                     sub_partition_size=self.sub_partition_sizes[i],
                     num_comm_intervals=self.num_comm_intervals_per_group[i])
@@ -646,7 +655,10 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             for comm_idx in range(num_comm_intervals):
                 single_comm_all_partitions = []
                 for rank in range(world_size):
-                    single_comm_all_partitions.append(all_sub_partitions[rank][comm_idx])
+                    if self.fp32_allreduce:
+                        single_comm_all_partitions.append(all_sub_partitions[rank][comm_idx].float())
+                    else:
+                        single_comm_all_partitions.append(all_sub_partitions[rank][comm_idx])
 
                 if postscale_gradients:
                     if gradient_predivide_factor != 1.0:
@@ -669,6 +681,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                     dist.reduce_scatter(output=single_comm_all_partitions[local_rank],
                                         input_list=single_comm_all_partitions,
                                         group=self.dp_process_group)
+                if self.fp32_allreduce:
+                    for rank in range(world_size):
+                        all_sub_partitions[rank][comm_idx] = all_sub_partitions[rank][comm_idx].to(self.precision)
 
     def step(self, closure=None, comms_timer=None):
         # First compute norm for all group so we know if there is overflow
@@ -747,9 +762,15 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         #gather the updated weights from everyone
         for fp16_all_sub_partitions in self.parallel_comm_sub_partitioned_fp16_groups:
             for comm_id, sub_partitions in enumerate(fp16_all_sub_partitions):
+                if self.fp32_allreduce:
+                    for i in range(len(sub_partitions)):
+                        sub_partitions[i] = sub_partitions[i].float()
                 dist.all_gather(sub_partitions,
                                 sub_partitions[partition_id],
                                 group=self.dp_process_group)
+                if self.fp32_allreduce:
+                    for i in range(len(sub_partitions)):
+                        sub_partitions[i] = sub_partitions[i].to(self.precision)
         if comms_timer is not None:
             comms_timer.stop()
 
