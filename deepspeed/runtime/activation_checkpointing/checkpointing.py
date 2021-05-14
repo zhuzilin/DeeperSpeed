@@ -253,7 +253,7 @@ def get_partition_size(item):
     return int(partition_size)
 
 
-def get_full_inputs(tensors, device=None):
+def get_full_inputs(tensors, device=None, fp32_comm=False):
     inputs = []
     num_args = int(len(tensors) / 2)
     for i in range(num_args - 1):
@@ -274,9 +274,14 @@ def get_full_inputs(tensors, device=None):
             part_i = flat_tensor.narrow(0, partition_size * i, partition_size)
             if i == mp_rank:
                 part_i.copy_(item)
+            if fp32_comm:
+                part_i = part_i.float()
             partitions.append(part_i)
         if mp_group is not None:
             dist.all_gather(partitions, partitions[mp_rank], group=mp_group)
+        if fp32_comm:
+            for i in range(mp_size):
+                partitions[i] = partitions[i].to(item.dtype)
         input_tensor = flat_tensor.view(list(size.numpy()))
         item.data = input_tensor.data
 
@@ -599,9 +604,14 @@ class CheckpointFunction(torch.autograd.Function):
         global cuda_device, transport_stream, PARTITION_ACTIVATIONS
 
         if PARTITION_ACTIVATIONS:
+            if ctx.saved_tensors and ctx.saved_tensors[0].dtype == torch.bfloat16:
+                FP32_COMM = True
+            else:
+                FP32_COMM = False
             # with torch.cuda.stream(transport_stream):
             inputs = get_full_inputs(ctx.saved_tensors,
-                                     device=cuda_device if PA_TO_CPU else None)
+                                     device=cuda_device if PA_TO_CPU else None,
+                                     fp32_comm=FP32_COMM)
             detached_inputs = detach_variable(inputs)
         else:
             inputs = ctx.saved_tensors
