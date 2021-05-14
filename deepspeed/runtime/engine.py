@@ -139,7 +139,7 @@ class DeepSpeedEngine(Module):
         self.store_gradients = False
         self.store_gradients_cpu = False
         self.stored_gradients = None
-        self.bf16_compressed_allreduce = True # hardcode for now
+        self.bf16_compressed_allreduce = False # hardcode for now - it's not really working
 
         if dist_init_required is None:
             dist_init_required = not dist.is_initialized()
@@ -1299,8 +1299,7 @@ class DeepSpeedEngine(Module):
         if self.postscale_gradients():
             if self.gradient_predivide_factor() != 1.0:
                 tensor_to_allreduce.mul_(1. / self.gradient_predivide_factor())
-
-            if self.bf16_compressed_allreduce and self.precision == torch.bfloat16:
+            if self.bf16_compressed_allreduce and self.precision() == torch.bfloat16:
                 compressed_all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
             else:
                 dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
@@ -1311,7 +1310,7 @@ class DeepSpeedEngine(Module):
                                              self.dp_world_size)
         else:
             tensor_to_allreduce.div_(self.dp_world_size)
-            if self.bf16_compressed_allreduce and self.precision == torch.bfloat16:
+            if self.bf16_compressed_allreduce and self.precision() == torch.bfloat16:
                 compressed_all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
             else:
                 dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
