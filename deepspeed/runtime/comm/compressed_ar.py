@@ -6,14 +6,6 @@ import cupy
 from torch.utils.dlpack import to_dlpack
 from torch.utils.dlpack import from_dlpack
 
-version = torch.__version__.split('.')
-TORCH_VERSION_MAJOR = int(version[0])
-TORCH_VERSION_MINOR = int(version[1])
-if TORCH_VERSION_MAJOR < 1 or (TORCH_VERSION_MAJOR >= 1 and TORCH_VERSION_MINOR < 9):
-    compressed_all_reduce = compressed_all_reduce_cupy
-else:
-    compressed_all_reduce = compressed_all_reduce_torch
-
 def torch2cupy(tensor):
     return cupy.fromDlpack(to_dlpack(tensor))
 
@@ -52,3 +44,11 @@ def compressed_all_reduce_cupy(tensor, op=torch.distributed.ReduceOp.SUM, group=
     torch.distributed.all_reduce(m, op=op, group=group, async_op=async_op)
     torch.distributed.all_reduce(e, op=op, group=group, async_op=async_op)
     return reconstruct(m, e, original_dtype)
+
+version = torch.__version__.split('.')
+TORCH_VERSION_MAJOR = int(version[0])
+TORCH_VERSION_MINOR = int(version[1])
+if TORCH_VERSION_MAJOR < 1 or (TORCH_VERSION_MAJOR >= 1 and TORCH_VERSION_MINOR < 9):
+    compressed_all_reduce = compressed_all_reduce_cupy
+else:
+    compressed_all_reduce = compressed_all_reduce_torch
