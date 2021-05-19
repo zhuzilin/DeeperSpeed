@@ -199,7 +199,7 @@ class PipelineEngine(DeepSpeedEngine):
                 p2p.send(self.loss, self.next_stage)
 
     def set_has_attention_mask(self, value):
-        assert isinstance(value, boolean)
+        assert isinstance(value, bool)
         self.has_attention_mask = value
         
     def _build_data_iter(self, dataset):
