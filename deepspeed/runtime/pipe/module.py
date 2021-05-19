@@ -93,7 +93,8 @@ class PipelineModule(nn.Module):
                  base_seed=1234,
                  partition_method='parameters',
                  activation_checkpoint_interval=0,
-                 activation_checkpoint_func=checkpointing.checkpoint):
+                 activation_checkpoint_func=checkpointing.checkpoint,
+                 checkpointable_layers=None):
         """Modules to be parallelized with pipeline parallelism.
 
         The key constraint that enables pipeline parallelism is the
@@ -198,6 +199,7 @@ class PipelineModule(nn.Module):
 
         self.activation_checkpoint_interval = activation_checkpoint_interval
         self.activation_checkpoint_func = activation_checkpoint_func
+        self.set_checkpointable_layers(checkpointable_layers)
 
     def _build(self):
         specs = self._layer_specs
@@ -571,9 +573,19 @@ class PipelineModule(nn.Module):
 
         self._synchronize_tied_weights()
 
+    def set_checkpointable_layers(self, string):
+        """
+        Allows you to pass a string which defines which layers are checkpointable
+        """
+        self.checkpointable_layers = string
+
     def _is_checkpointable(self, funcs):
         if self.__class__.__name__ == 'GPT2ModelPipe':
             return all('ParallelTransformerLayerPipe' in f.__class__.__name__
                        for f in funcs)
+        elif self.checkpointable_layers is not None:
+            ret = all(self.checkpointable_layers in f.__class__.__name__
+                       for f in funcs)
+            return ret
         params = [f.parameters() for f in funcs if isinstance(f, torch.nn.Module)]
         return any(len(list(p)) > 0 for p in params)
