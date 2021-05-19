@@ -42,6 +42,7 @@ class LayerSpec:
             LayerSpec(torch.nn.Linear, self.hidden_hidden, self.out_dim)]
         ]
     """
+
     def __init__(self, typename, *module_args, **module_kwargs):
         self.typename = typename
         self.module_args = module_args
@@ -187,10 +188,10 @@ class PipelineModule(nn.Module):
         self.tied_weight_attrs = {}
 
         # Offset the random seed by the stage ID.
-        #newseed = torch.cuda.initial_seed() + self._grid.get_stage_id()
-        #ds_utils.set_random_seed(newseed)
+        # newseed = torch.cuda.initial_seed() + self._grid.get_stage_id()
+        # ds_utils.set_random_seed(newseed)
 
-        #with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
+        # with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
         self._build()
         self.to(f'cuda:{self.local_rank}')
 
@@ -199,7 +200,9 @@ class PipelineModule(nn.Module):
 
         self.activation_checkpoint_interval = activation_checkpoint_interval
         self.activation_checkpoint_func = activation_checkpoint_func
-        self.set_checkpointable_layers(checkpointable_layers)
+        if checkpointable_layers is not None:
+            assert isinstance(checkpointable_layers, list)
+        self.checkpointable_layers = checkpointable_layers
 
     def _build(self):
         specs = self._layer_specs
@@ -341,7 +344,7 @@ class PipelineModule(nn.Module):
                 # Since we either pass tensors or tuples of tensors without unpacking, we
                 # need to be careful not to double-wrap tensors with tuple.
                 if not isinstance(x, tuple):
-                    x = (x, )
+                    x = (x,)
 
                 if self._is_checkpointable(funcs):
                     x = self.activation_checkpoint_func(
@@ -400,7 +403,7 @@ class PipelineModule(nn.Module):
                             name = layer.__name__
                         except AttributeError:
                             pass
-                    print(f'    {idx+start:2d}: {name}')
+                    print(f'    {idx + start:2d}: {name}')
             if self.loss_fn:
                 try:
                     print(f'  loss: {self.loss_fn.__name__}')
@@ -564,28 +567,20 @@ class PipelineModule(nn.Module):
             model_ckpt_path = self.ckpt_layer_path(load_dir, idx)
             layer.load_state_dict(torch.load(model_ckpt_path,
                                              map_location=lambda storage,
-                                             loc: storage),
+                                                                 loc: storage),
                                   strict=strict)
             if self._grid.data_parallel_id == 0:
                 logger.info(
-                    f'RANK={self.global_rank} Loaded layer={idx+layer_offset} file={model_ckpt_path}'
+                    f'RANK={self.global_rank} Loaded layer={idx + layer_offset} file={model_ckpt_path}'
                 )
 
         self._synchronize_tied_weights()
 
-    def set_checkpointable_layers(self, string):
-        """
-        Allows you to pass a string which defines which layers are checkpointable
-        """
-        self.checkpointable_layers = string
-
     def _is_checkpointable(self, funcs):
-        if self.__class__.__name__ == 'GPT2ModelPipe':
+        if self.checkpointable_layers is not None:
+            return all(f.__class__.__name__ in self.checkpointable_layers for f in funcs)
+        elif self.__class__.__name__ == 'GPT2ModelPipe':
             return all('ParallelTransformerLayerPipe' in f.__class__.__name__
                        for f in funcs)
-        elif self.checkpointable_layers is not None:
-            ret = all(self.checkpointable_layers in f.__class__.__name__
-                       for f in funcs)
-            return ret
         params = [f.parameters() for f in funcs if isinstance(f, torch.nn.Module)]
         return any(len(list(p)) > 0 for p in params)
