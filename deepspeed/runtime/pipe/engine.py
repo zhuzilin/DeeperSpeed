@@ -183,7 +183,9 @@ class PipelineEngine(DeepSpeedEngine):
 
         if self.is_last_stage():
             self.loss_model = self.module.loss_fn
-
+            
+        self.has_attention_mask = self.module.__class__.__name__ == 'GPT2ModelPipe'
+        
         # Initialize pipeline communicators. Just send a 0.
         if is_even(self.stage_id):
             if not self.is_last_stage():
@@ -196,6 +198,10 @@ class PipelineEngine(DeepSpeedEngine):
             if not self.is_last_stage():
                 p2p.send(self.loss, self.next_stage)
 
+    def set_has_attention_mask(self, value):
+        assert isinstance(value, boolean)
+        self.has_attention_mask = value
+        
     def _build_data_iter(self, dataset):
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset,
@@ -919,7 +925,7 @@ class PipelineEngine(DeepSpeedEngine):
         # NCCL does not like to send torch.BoolTensor types, so cast the mask to half().
         # We could do char, but with half() we can eventually flatten with other fp16
         # messages (TODO)
-        if self.module.__class__.__name__ == 'GPT2ModelPipe':
+        if self.has_attention_mask:
             outputs = list(outputs)
             outputs[-1] = outputs[-1].half()
             outputs = tuple(outputs)
@@ -938,7 +944,7 @@ class PipelineEngine(DeepSpeedEngine):
                                       f'{type(outputs)}')
 
         # Restore the boolean tensor
-        if self.module.__class__.__name__ == 'GPT2ModelPipe':
+        if self.has_attention_mask:
             outputs = list(outputs)
             outputs[-1] = outputs[-1].bool()
             outputs = tuple(outputs)
@@ -968,7 +974,7 @@ class PipelineEngine(DeepSpeedEngine):
         # a grad that needs to be communicated. We free the buffer immediately
         # after, so no need to restore it. The receiver also has a hack that skips
         # the recv. This is because NCCL does not let us send torch.BoolTensor :-(.
-        if self.module.__class__.__name__ == 'GPT2ModelPipe':
+        if self.has_attention_mask:
             inputs = list(inputs)
             inputs.pop()
             inputs = tuple(inputs)
@@ -1030,7 +1036,7 @@ class PipelineEngine(DeepSpeedEngine):
 
             # NCCL does not like to send torch.BoolTensor types, so un-cast the
             # attention mask
-            if self.module.__class__.__name__ == 'GPT2ModelPipe':
+            if self.has_attention_mask:
                 recvd[-1] = recvd[-1].bool()
 
             recvd = tuple(recvd)
