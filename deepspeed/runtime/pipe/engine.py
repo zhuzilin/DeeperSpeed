@@ -29,7 +29,6 @@ TARGET_ID = -2
 LOG_STAGE = -2
 DATA_PARALLEL_ID = -2
 
-
 def is_even(number):
     return number % 2 == 0
 
@@ -76,7 +75,6 @@ class PipelineEngine(DeepSpeedEngine):
 
         # pipeline step for logging
         self.log_batch_step_id = -1
-
         self.micro_batch_size = self.train_micro_batch_size_per_gpu()
         self.micro_batches = self.gradient_accumulation_steps()
 
@@ -263,7 +261,7 @@ class PipelineEngine(DeepSpeedEngine):
             self.pipe_buffers[key].extend([None] * num_added)
         self.num_pipe_buffers = num_buffers
 
-    def train_batch(self, data_iter=None):
+    def train_batch(self, data_iter=None, layers_to_hook=None):
         """Progress the pipeline to train the next batch of data. The engine will ingest
         ``self.train_batch_size()`` total samples collectively across all workers.
 
@@ -291,9 +289,11 @@ class PipelineEngine(DeepSpeedEngine):
             raise RuntimeError(
                 f'train_batch() requires gradients enabled. Use eval_batch() instead.')
 
+        if layers_to_hook is not None:
+            self.layers_to_hook = layers_to_hook
+
         if data_iter:
             self.set_dataiterator(data_iter)
-
         self.module.train()
         self.total_loss = None
 
@@ -342,9 +342,13 @@ class PipelineEngine(DeepSpeedEngine):
                 self.timer_values = timer_values
 
         # TODO: should return precisely what loss returned and allow others to be queried?
+
+        if layers_to_hook is not None:
+            self.layers_to_hook = []
+
         return self.agg_train_loss
 
-    def eval_batch(self, data_iter, return_logits=False):
+    def eval_batch(self, data_iter, return_logits=False, layers_to_hook=None):
         """Evaluate the pipeline on a batch of data from ``data_iter``. The
         engine will evaluate ``self.train_batch_size()`` total samples
         collectively across all workers.
@@ -375,6 +379,9 @@ class PipelineEngine(DeepSpeedEngine):
         self.module.eval()
         self.total_loss = None
 
+        if layers_to_hook is not None:
+            self.layers_to_hook = layers_to_hook
+
         # Use the provided data iterator
         train_iterator = self.data_iterator
         self.set_dataiterator(data_iter)
@@ -399,6 +406,10 @@ class PipelineEngine(DeepSpeedEngine):
         # Restore the training iterator
         self.set_dataiterator(train_iterator)
 
+        # reset layers to hook to empty
+        if layers_to_hook is not None:
+            self.layers_to_hook = []
+
         # Reset any buffers that may have been populated during the forward passes.
         # ds_checkpointing.reset()
         self.eval_return_logits = False
@@ -408,7 +419,7 @@ class PipelineEngine(DeepSpeedEngine):
             return self.agg_eval_loss, outputs
         return self.agg_eval_loss
 
-    def inference_batch(self, data_iter):
+    def inference_batch(self, data_iter, layers_to_hook=None):
         """Inference the pipeline on a single batch of data from ``data_iter``.
 
         This method is equivalent to:
@@ -449,6 +460,9 @@ class PipelineEngine(DeepSpeedEngine):
         # Use the provided data iterator
         train_iterator = self.data_iterator
         self.set_dataiterator(data_iter)
+
+        if layers_to_hook is not None:
+            self.layers_to_hook = layers_to_hook
 
         # Do the work
         sched = schedule.InferenceSchedule(micro_batches=self.micro_batches,
@@ -528,6 +542,10 @@ class PipelineEngine(DeepSpeedEngine):
         self.set_dataiterator(train_iterator)
         self.set_batch_fn(train_batch_fn)
 
+        # reset layers to hook to empty
+        if layers_to_hook is not None:
+            self.layers_to_hook = []
+            
         return logits, presents
 
     def is_first_stage(self):
@@ -661,7 +679,7 @@ class PipelineEngine(DeepSpeedEngine):
         self._zero_grads(inputs)
 
         outputs = super().forward(inputs)
-
+        
         # Partition the outputs if we are not the last stage
         if self.is_pipe_partitioned and not self.is_last_stage():
             part = PartitionedTensor(tensor=outputs[0],

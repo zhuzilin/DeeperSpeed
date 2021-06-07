@@ -218,6 +218,35 @@ class DeepSpeedEngine(Module):
         self.flatten = util_ops.flatten
         self.unflatten = util_ops.unflatten
 
+        self.layer_outputs, self.layers_to_hook, self.hooks = {}, [], []
+        self.layer_name_pattern = "transformerlayer"
+        self.register_forward_hook(layers_to_hook=self.layers_to_hook)
+
+
+    def register_forward_hook(self, layers_to_hook: list, layer_name_pattern: str = "transformerlayer"):
+        self.layer_name_pattern = layer_name_pattern
+        self.layers_to_hook = layers_to_hook
+
+        if self.hooks:
+            # remove old hooks
+            for handle in self.hooks:
+                handle.remove()
+
+        def hook_fn(module, input, output):
+            if hasattr(module, 'layer_number'):
+                key = module.layer_number
+                if self.layers_to_hook == "all":
+                    pass
+                if int(key) not in self.layers_to_hook:
+                    return
+            else:
+                key = module
+            self.layer_outputs[key] = output 
+
+        for name, layer in self.module._modules.items():
+            if hasattr(layer, "__class__") and self.layer_name_pattern in layer.__class__.__name__.lower():
+                self.hooks.append(layer.register_forward_hook(hook_fn))
+
     def get_batch_info(self):
         """ Get all training batch related settings.
 
