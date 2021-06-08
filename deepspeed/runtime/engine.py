@@ -10,6 +10,7 @@ import hashlib
 import torch.distributed as dist
 from collections import OrderedDict
 from shutil import copyfile
+import re 
 
 from torch.nn.modules import Module
 from torch.distributed.distributed_c10d import _get_global_rank
@@ -224,7 +225,7 @@ class DeepSpeedEngine(Module):
 
 
     def register_forward_hook(self, layers_to_hook: list, layer_name_pattern: str = "transformerlayer"):
-        self.layer_name_pattern = layer_name_pattern
+        self.layer_name_pattern = re.compile(layer_name_pattern, re.IGNORECASE)
         self.layers_to_hook = layers_to_hook
 
         if self.hooks:
@@ -240,12 +241,17 @@ class DeepSpeedEngine(Module):
                 if int(key) not in self.layers_to_hook:
                     return
             else:
-                key = module
+                key = module.__class__.__name__
             self.layer_outputs[key] = output 
 
-        for name, layer in self.module._modules.items():
-            if hasattr(layer, "__class__") and self.layer_name_pattern in layer.__class__.__name__.lower():
-                self.hooks.append(layer.register_forward_hook(hook_fn))
+        def get_all_layers(net):
+            for name, layer in net._modules.items():
+                if isinstance(layer, torch.nn.Sequential):
+                    get_all_layers(layer)
+                elif hasattr(layer, "__class__") and self.layer_name_pattern.search(layer.__class__.__name__.lower()):
+                    self.hooks.append(layer.register_forward_hook(hook_fn))
+
+        get_all_layers(self.module)
 
     def get_batch_info(self):
         """ Get all training batch related settings.
