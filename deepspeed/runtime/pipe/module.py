@@ -553,7 +553,10 @@ class PipelineModule(nn.Module):
             model_ckpt_path = self.ckpt_layer_path(save_dir, idx)
             if not hasattr(layer, 'state_dict'):
                 continue
-            torch.save(layer.state_dict(), model_ckpt_path)
+            
+            # for some reason torch is saving lots of unnecessary information
+            # this line forces a copy of the tensor in order to get rid of temporary stuff
+            torch.save({k: (v.cpu() if torch.is_tensor(v) else v) for k, v in layer.state_dict().items()}, model_ckpt_path)
 
     def load_state_dir(self, load_dir, strict=True):
         rank = dist.get_rank()
