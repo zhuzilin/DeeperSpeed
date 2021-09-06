@@ -115,7 +115,7 @@ class FP16_DeepSpeedZeroOptimizer(object):
             raise SystemError("Cannot use fp16 without CUDA.")
         self.optimizer = init_optimizer
         self.precision = precision
-        self.fp32_allreduce = allreduce_always_fp32
+        self.fp32_allreduce = True if self.precision == torch.bfloat16 else allreduce_always_fp32
 
 
         # Load pre-built or JIT compile (un)flatten ops

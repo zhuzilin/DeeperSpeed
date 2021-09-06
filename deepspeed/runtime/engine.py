@@ -803,6 +803,7 @@ class DeepSpeedEngine(Module):
     def _configure_zero_optimizer(self, optimizer):
         zero_stage = self.zero_optimization_stage()
         log_dist('Creating fp16 ZeRO stage {} optimizer'.format(zero_stage), ranks=[0])
+        assert not self.allreduce_always_fp32(), "ZeRO does not support 'fp32_allreduce': true"
         timers = self.timers if self.wall_clock_breakdown() else None
 
         if zero_stage == ZERO_OPTIMIZATION_OPTIMIZER_STATES:
@@ -818,8 +819,7 @@ class DeepSpeedEngine(Module):
                 dp_process_group=self.data_parallel_group,
                 elastic_checkpoint=self.zero_elastic_checkpoint(),
                 mpu=self.mpu,
-                precision=self.precision(),
-                fp32_allreduce=self.allreduce_always_fp32)
+                precision=self.precision())
         elif zero_stage == ZERO_OPTIMIZATION_GRADIENTS:
             optimizer = FP16_DeepSpeedZeroOptimizer(
                 optimizer,
@@ -839,8 +839,7 @@ class DeepSpeedEngine(Module):
                 postscale_gradients=self.postscale_gradients(),
                 gradient_predivide_factor=self.gradient_predivide_factor(),
                 gradient_accumulation_steps=self.gradient_accumulation_steps(),
-                precision=self.precision(),
-                fp32_allreduce=self.allreduce_always_fp32)
+                precision=self.precision())
         elif zero_stage == ZERO_OPTIMIZATION_WEIGHTS:
             print("Initializing ZeRO Stage 3") if dist.get_rank() == 0 else None
             from deepspeed.runtime.zero.stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
@@ -868,8 +867,7 @@ class DeepSpeedEngine(Module):
                 postscale_gradients=self.postscale_gradients(),
                 gradient_predivide_factor=self.gradient_predivide_factor(),
                 gradient_accumulation_steps=self.gradient_accumulation_steps(),
-                aio_config=self.aio_config(),
-                fp32_allreduce=self.allreduce_always_fp32)
+                aio_config=self.aio_config())
 
         else:
             raise NotImplementedError("ZeRO stage {} not implemented".format(zero_stage))
