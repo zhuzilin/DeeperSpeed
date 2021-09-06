@@ -242,7 +242,7 @@ class DeepSpeedEngine(Module):
                     return
             else:
                 key = module.__class__.__name__
-            self.layer_outputs[key] = output 
+            self.layer_outputs[key] = [o.cpu() if torch.is_tensor(o) else o for o in output]
 
         def get_all_layers(net):
             for name, layer in net._modules.items():
