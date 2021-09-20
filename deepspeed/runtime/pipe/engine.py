@@ -813,6 +813,8 @@ class PipelineEngine(DeepSpeedEngine):
                 for x in batch[1]:
                     assert torch.is_tensor(x)
                     x = x.to(self.device).detach()
+                    if self.is_first_stage(): # first stage can also be last stage - need to ensure the inputs require grad
+                        x.requires_grad = x.is_floating_point()
                     loaded.append(x)
                 loaded = tuple(loaded)
 
