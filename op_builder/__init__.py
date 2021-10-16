@@ -9,7 +9,9 @@ from .transformer import TransformerBuilder
 from .stochastic_transformer import StochasticTransformerBuilder
 from .utils import UtilsBuilder
 from .async_io import AsyncIOBuilder
-from .builder import get_default_compute_capatabilities
+from .builder import get_default_compute_capabilities
+from .transformer_inference import InferenceBuilder
+from .quantizer import QuantizerBuilder
 
 # TODO: infer this list instead of hard coded
 # List of all available ops
@@ -20,7 +22,9 @@ __op_builders__ = [
     SparseAttnBuilder(),
     TransformerBuilder(),
     StochasticTransformerBuilder(),
+    AsyncIOBuilder(),
+    InferenceBuilder(),
     UtilsBuilder(),
-    AsyncIOBuilder()
+    QuantizerBuilder()
 ]
 ALL_OPS = {op.name: op for op in __op_builders__}

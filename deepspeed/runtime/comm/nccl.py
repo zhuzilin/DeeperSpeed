@@ -13,10 +13,10 @@ from deepspeed.runtime.compression.cupy import CupyBackend
 
 class NcclBackend(object):
     def __init__(self, mpu=None):
-        self.mpu = mpu
-        if self.mpu is None:
+        if mpu is None:
             self.world_group = dist.new_group(ranks=range(dist.get_world_size()))
         else:
+            self.mpu = mpu
             self.world_group = self.mpu.get_data_parallel_group()
         self.rank = dist.get_rank(group=self.world_group)
         self.size = dist.get_world_size(group=self.world_group)
@@ -86,7 +86,7 @@ class NcclBackend(object):
 
         # worker_scale = self.compression_backend.cupy2torch(cupy_worker_scale)
         recvbuf_sign = self.compression_backend.cupy2torch(cupy_recvbuf_sign)
-        # recvbuf_scale = self.compression_backend.cupy2torch(cupy_recvbuf_scale)
+        #recvbuf_scale = self.compression_backend.cupy2torch(cupy_recvbuf_scale)
         recvbuf_scale = [
             torch.zeros(1,
                         dtype=worker_scale.dtype,

@@ -138,18 +138,18 @@ class OptimizerSwapper(object):
 
         self.optimizer = optimizer
 
-        # Swap buffer management
-        self.largest_numel = largest_numel
-        self.dtype = dtype
-        self.swap_buffer_manager = SwapBufferManager(
-            num_elems=largest_numel,
-            count=swap_config[OFFLOAD_OPTIMIZER_BUFFER_COUNT],
-            dtype=dtype)
-
         # Read/Write alignment for each thread during Intra-request parallelism
         self.min_aio_bytes = max(MIN_AIO_BYTES, aio_config[AIO_BLOCK_SIZE])
         self.aligned_bytes = AIO_ALIGNED_BYTES * aio_config[AIO_THREAD_COUNT]
         self.numel_alignment = self.aligned_bytes // self.swap_element_size
+
+        # Swap buffer management
+        self.largest_numel = self._io_aligned_numel(largest_numel)
+        self.dtype = dtype
+        self.swap_buffer_manager = SwapBufferManager(
+            num_elems=self.largest_numel,
+            count=swap_config[OFFLOAD_OPTIMIZER_BUFFER_COUNT],
+            dtype=dtype)
 
         # Timers
         self.timers = timers
@@ -461,12 +461,12 @@ class OptimizerSwapper(object):
         self._stop_timer(UNSWAPPED_READ_GRADIENTS)
         self._log_timers([UNSWAPPED_READ_GRADIENTS])
 
-        # It shoud be safe to discard unswapped gradient partitions
+        # It should be safe to discard unswapped gradient partitions
         swap_info.release_unswapped_gradients()
 
         if SWAPPER_DEBUG_MODE:
             logger.info(
-                f'optimizer_retreive_unswapped_radients: param={swap_info.param_id} tensor_count={tensor_count} elem_count={num_elem_count}'
+                f'optimizer_retrieve_unswapped_gradients: param={swap_info.param_id} tensor_count={tensor_count} elem_count={num_elem_count}'
             )
 
     def _get_state_tensors(self, parameter):

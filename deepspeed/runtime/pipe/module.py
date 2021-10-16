@@ -1,4 +1,5 @@
 import os
+import glob
 import enum
 
 import re as regex
@@ -14,6 +15,7 @@ from deepspeed.utils import logger
 from .. import utils as ds_utils
 from ..activation_checkpointing import checkpointing
 from .topology import PipeDataParallelTopology, PipelineParallelGrid
+from deepspeed.runtime.state_dict_factory import SDLoaderFactory
 
 
 class PipelineError(Exception):
@@ -137,6 +139,10 @@ class PipelineModule(nn.Module):
 
         self.loss_fn = loss_fn
 
+        self.checkpointable_layers = checkpointable_layers
+        if checkpointable_layers is not None:
+            assert isinstance(checkpointable_layers, list), "param `checkpointable_layers` must be type of list."
+
         self.seed_layers = seed_layers
         self.seed_fn = seed_fn
         self.base_seed = base_seed
@@ -170,7 +176,7 @@ class PipelineModule(nn.Module):
                 topology = PipeDataParallelTopology(num_pp=num_stages, num_dp=dp)
                 self._topo = topology
 
-        # Contruct communicators for pipeline topology
+        # Construct communicators for pipeline topology
         self._grid = PipelineParallelGrid(process_group=self.world_group,
                                           topology=self._topo)
 
@@ -256,7 +262,7 @@ class PipelineModule(nn.Module):
         # All pipeline parameters should be considered as model parallel in the context
         # of our FP16 optimizer
         for p in self.parameters():
-            p.model_parallel = True
+            p.ds_pipe_replicated = False
 
     def _count_layer_params(self):
         """Count the trainable parameters in individual layers.
@@ -448,10 +454,10 @@ class PipelineModule(nn.Module):
             # TODO: fiber to generate process groups.
             tied_stages = set(self.stage_owner(idx) for idx in tied_layers)
             for dp in range(self._grid.data_parallel_size):
-                for mp in range(self._grid.model_parallel_size):
+                for mp in range(self._grid.get_slice_parallel_world_size()):
                     tied_ranks = []
                     for s in sorted(tied_stages):
-                        if self._grid.model_parallel_size > 1:
+                        if self._grid.get_slice_parallel_world_size() > 1:
                             tied_ranks.append(
                                 self._grid.stage_to_global(stage_id=s,
                                                            data=dp,
@@ -475,7 +481,7 @@ class PipelineModule(nn.Module):
                             # Only count the tied module once in the eyes of the FP16 optimizer
                             if self.global_rank != tied_ranks[0]:
                                 for p in self.tied_modules[key].parameters():
-                                    p.model_parallel = False
+                                    p.ds_pipe_replicated = True
         '''
         if len(tied_comms) > 0:
             print(f'RANK={self.global_rank} tied_comms={tied_comms}')
@@ -543,6 +549,15 @@ class PipelineModule(nn.Module):
         layer_ckpt_path += '-model_states.pt'
         return layer_ckpt_path
 
+    def ckpt_layer_path_list(self, ckpt_dir, local_layer_idx):
+        """Get all ckpt file list for a specific pipeline module layer. """
+        idx = local_layer_idx + self._local_start
+        layer_ckpt_path = os.path.join(ckpt_dir, f'layer_{idx:02d}-')
+        layer_ckpt_path += "*model_states.pt"
+        ckpt_files = glob.glob(layer_ckpt_path)
+        ckpt_files.sort()
+        return ckpt_files
+
     def save_state_dict(self, save_dir):
         if self._grid.data_parallel_id != 0:
             return
@@ -553,37 +568,51 @@ class PipelineModule(nn.Module):
             model_ckpt_path = self.ckpt_layer_path(save_dir, idx)
             if not hasattr(layer, 'state_dict'):
                 continue
-            
-            # for some reason torch is saving lots of unnecessary information
-            # this line forces a copy of the tensor in order to get rid of temporary stuff
-            torch.save({k: (v.cpu() if torch.is_tensor(v) else v) for k, v in layer.state_dict().items()}, model_ckpt_path)
+            # We pass cloned tensors to torch.save() to avoid checkpoint bloat which occurs because torch.save()
+            # saves the underlying storage rather than the slice of the storage corresponding to individual tensors.
+            # This is a problem in DeepSpeed because we often allocate tensors using slices of large flattened buffers.
+            # Tensor cloning helps to avoid this problem because the storage of cloned tensors are closer to the true size.
+            # It is expected that the garbage collector will reclaim the cloned tensor storage to avoid memory bloat.
+            # See https://pytorch.org/docs/stable/notes/serialization.html#preserve-storage-sharing
+            orig_state_dict = layer.state_dict()
+            final_state_dict = type(orig_state_dict)(
+                {k: v.clone()
+                 for k,
+                 v in orig_state_dict.items()})
+            torch.save(final_state_dict, model_ckpt_path)
 
     def load_state_dir(self, load_dir, strict=True):
-        rank = dist.get_rank()
-
-        layer_offset = self._local_start
         for idx, layer in enumerate(self.forward_funcs):
             # Functions, etc. will not have state_dicts
             if not hasattr(layer, 'load_state_dict'):
                 continue
 
-            model_ckpt_path = self.ckpt_layer_path(load_dir, idx)
-            layer.load_state_dict(torch.load(model_ckpt_path,
-                                             map_location=lambda storage,
-                                                                 loc: storage),
-                                  strict=strict)
-            if self._grid.data_parallel_id == 0:
-                logger.info(
-                    f'RANK={self.global_rank} Loaded layer={idx + layer_offset} file={model_ckpt_path}'
-                )
+            # get all checkpoint files for the layer.
+            model_ckpt_list = self.ckpt_layer_path_list(load_dir, idx)
+            mp_rank = self._grid.get_slice_parallel_rank()
+            mp_world_size = self._grid.get_slice_parallel_world_size()
+
+            sd_loader = SDLoaderFactory.get_sd_loader(model_ckpt_list, version=2.0)
+            load_path, checkpoint, _ = sd_loader.load(mp_world_size, mp_rank, module_key=None, is_pipe_parallel=True)
+
+            layer.load_state_dict(checkpoint)
+
+            # if self._grid.data_parallel_id == 0:
+            #     logger.info(
+            #         f'RANK={self.global_rank} Loaded layer={idx+self._local_start} file={load_path}'
+            #     )
 
         self._synchronize_tied_weights()
 
     def _is_checkpointable(self, funcs):
-        if self.checkpointable_layers is not None:
-            return all(f.__class__.__name__ in self.checkpointable_layers for f in funcs)
-        elif self.__class__.__name__ == 'GPT2ModelPipe':
+        # This is an unfortunate hack related to torch and deepspeed activation checkpoint implementations.
+        # Some layers like torch.nn.Embedding will not receive grads if checkpointed, which breaks things.
+        # I presume it's related to the discrete inputs that cannot require_grad? Need to revisit.
+        if self.__class__.__name__ in ('GPTModelPipe', 'GPT2ModelPipe'):
             return all('ParallelTransformerLayerPipe' in f.__class__.__name__
                        for f in funcs)
+        if self.checkpointable_layers is not None:
+            return all(f.__class__.__name__ in self.checkpointable_layers for f in funcs)
+
         params = [f.parameters() for f in funcs if isinstance(f, torch.nn.Module)]
         return any(len(list(p)) > 0 for p in params)

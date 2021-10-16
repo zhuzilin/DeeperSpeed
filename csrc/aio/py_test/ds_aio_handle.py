@@ -8,8 +8,8 @@ Functionality of swapping optimizer tensors to/from (NVMe) storage devices.
 import torch
 import os
 import time
-from deepspeed.ops.aio import aio_handle
 from multiprocessing import Pool, Barrier
+from deepspeed.ops.aio import AsyncIOBuilder
 from test_ds_aio_utils import report_results, task_log, task_barrier
 
 
@@ -29,11 +29,11 @@ def pre_handle(args, tid, read_op):
     )
 
     io_parallel = args.io_parallel if args.io_parallel else 1
-    handle = aio_handle(args.block_size,
-                        args.queue_depth,
-                        args.single_submit,
-                        args.overlap_events,
-                        io_parallel)
+    handle = AsyncIOBuilder().load().aio_handle(args.block_size,
+                                                args.queue_depth,
+                                                args.single_submit,
+                                                args.overlap_events,
+                                                io_parallel)
     task_log(tid, f'created deepspeed aio handle')
 
     ctxt = {}
@@ -162,7 +162,7 @@ def _aio_handle_tasklet(pool_params):
     return ctxt["main_task_sec"], ctxt["elapsed_sec"], ctxt["num_bytes"] * args.loops
 
 
-def _init_takslet(b):
+def _init_tasklet(b):
     global aio_barrier
     aio_barrier = b
 
@@ -170,7 +170,7 @@ def _init_takslet(b):
 def aio_handle_multiprocessing(args, read_op):
     b = Barrier(args.threads)
     pool_params = [(args, p, read_op) for p in range(args.threads)]
-    with Pool(processes=args.threads, initializer=_init_takslet, initargs=(b, )) as p:
+    with Pool(processes=args.threads, initializer=_init_tasklet, initargs=(b, )) as p:
         pool_results = p.map(_aio_handle_tasklet, pool_params)
 
     report_results(args, read_op, pool_results)

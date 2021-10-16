@@ -5,7 +5,7 @@ from collections import defaultdict
 
 from deepspeed.runtime.zero.utils import _initialize_parameter_parallel_groups
 from deepspeed.runtime.fp16.loss_scaler import LossScaler, DynamicLossScaler
-from deepspeed.runtime.utils import get_grad_norm, CheckOverflow
+from deepspeed.runtime.utils import get_global_norm, get_grad_norm, CheckOverflow
 from deepspeed.runtime.zero.config import ZERO_OPTIMIZATION_OPTIMIZER_STATES
 from deepspeed.utils import logger, log_dist
 from deepspeed.ops.op_builder import UtilsBuilder
@@ -122,6 +122,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                  max_elements_per_comm=5e8,
                  elastic_checkpoint=True,
                  precision=torch.half):
+                 postscale_gradients=True,
+                 gradient_predivide_factor=1.0,
+                 gradient_average=True):
 
         # Load pre-built or JIT compile (un)flatten ops
         util_ops = UtilsBuilder().load()
@@ -148,6 +151,11 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
         self.verbose = verbose
         self.dp_process_group = dp_process_group
+
+        self.postscale_gradients = postscale_gradients
+        self.gradient_predivide_factor = gradient_predivide_factor
+        self.gradient_average = gradient_average
+        self._global_grad_norm = 0.
 
         # TODO: automatically turn off if #params > some_limit
         self.all_gather_partitions = all_gather_partitions
@@ -626,10 +634,10 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         flat_tensors = self.flatten(aligned_tensor_list)
         return flat_tensors
 
-    def reduce_scatter_gradients(self,
-                                 postscale_gradients,
-                                 gradient_predivide_factor,
-                                 gradient_average):
+    def reduce_gradients(self, pipeline_parallel=False):
+        postscale_gradients = self.postscale_gradients
+        gradient_predivide_factor = self.gradient_predivide_factor
+        gradient_average = self.gradient_average
 
         world_size = dist.get_world_size(group=self.dp_process_group)
         local_rank = dist.get_rank(group=self.dp_process_group)
@@ -733,9 +741,11 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
             local_sub_partitions_grad_groups.append(local_grad_sub_partitions)
 
+        self._global_grad_norm = get_global_norm(norm_list=norm_groups)
 
         #RS: update unscale/clip with sub partitions
-        self.unscale_and_clip_grads(local_sub_partitions_grad_groups, norm_groups)
+        self.unscale_and_clip_grads(local_sub_partitions_grad_groups,
+                                    self._global_grad_norm)
 
 
         self.optimizer.step()
@@ -782,12 +792,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                 p.data = q.data
         return self.overflow
 
-    def unscale_and_clip_grads(self, grad_groups_flat, norm_groups):
-        total_norm = 0.0
-        for norm in norm_groups:
-            total_norm += norm**2.0
-        total_norm = math.sqrt(total_norm)
-
+    def unscale_and_clip_grads(self, grad_groups_flat, total_norm):
         # compute combined scale factor for this group
         combined_scale = self.loss_scale
         if self.clip_grad > 0.:

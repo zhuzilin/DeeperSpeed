@@ -4,11 +4,7 @@ import torch.distributed as dist
 import numpy as np
 import argparse
 import deepspeed
-<<<<<<< HEAD:tests/onebit/test_com_reduce_host.py
-from deepspeed.runtime.fp16.onebit.onebitadam import OnebitAdam
-=======
 import os
->>>>>>> 669028f0fd5067c9247120cb21fd6e9bea4820a9:tests/onebit/test_nccl_backend.py
 
 from deepspeed.runtime.comm.nccl import NcclBackend
 
@@ -82,18 +78,9 @@ test_correctness = True
 
 # If the number in the compensated_server_m is too small (e.g 1e-8), then calling sign() might be problematic
 # The test would skip those numbers that are too small in compensated_server_m
-<<<<<<< HEAD:tests/onebit/test_com_reduce_host.py
-if torch.sum(diff_server_mask) == 0:
-    print('Successfully passed the test for 1bit Adam at Rank {}'.format(rank))
-else:
-    check_mag_mask = mpi_server[diff_server_mask] > magnitude_threshold
-    if torch.sum(check_mag_mask) == 0:
-        print('Successfully passed the test for 1bit Adam at Rank {}'.format(rank))
-=======
 if test_correctness:
     if torch.sum(diff_server_mask) == 0:
         print('Successfully passed the test for NCCL Backend at Rank {}'.format(rank))
->>>>>>> 669028f0fd5067c9247120cb21fd6e9bea4820a9:tests/onebit/test_nccl_backend.py
     else:
         check_mag_mask = mpi_server[diff_server_mask] > magnitude_threshold
         if torch.sum(check_mag_mask) == 0:
