@@ -29,8 +29,10 @@ def get_group_alignment_padding(tensor_list, sub_partition_size, sub_partition_c
 
     return group_paddings
 
+
 class Timer:
     """Timer."""
+
     def __init__(self, name):
         self.name_ = name
         self.elapsed_ = 0.0
@@ -39,16 +41,16 @@ class Timer:
 
     def start(self):
         """Start the timer."""
-        assert not self.started_, 'timer has already been started'
+        assert not self.started_, "timer has already been started"
         torch.cuda.synchronize()
         self.start_time = time.time()
         self.started_ = True
 
     def stop(self):
         """Stop the timer."""
-        assert self.started_, 'timer is not started'
+        assert self.started_, "timer is not started"
         torch.cuda.synchronize()
-        self.elapsed_ += (time.time() - self.start_time)
+        self.elapsed_ += time.time() - self.start_time
         self.started_ = False
 
     def reset(self):
@@ -72,12 +74,15 @@ class Timer:
             self.start()
         return elapsed_
 
+
 def _single_range_check(current_index, start_index, end_index, tensor_size):
     offset = 0
     if (current_index >= start_index) and (current_index < end_index):
         # Fully inside bounds
         return True, offset
-    elif (start_index > current_index) and (start_index < (current_index + tensor_size)):
+    elif (start_index > current_index) and (
+        start_index < (current_index + tensor_size)
+    ):
         # Partially contained, compute offset
         offset = start_index - current_index
         return True, offset
@@ -89,7 +94,9 @@ def _range_check(current_index, element_intervals, tensor_size):
     results = []
     for comm_idx, interval in enumerate(element_intervals):
         start_index, end_index = interval
-        contained, offset = _single_range_check(current_index, start_index, end_index, tensor_size)
+        contained, offset = _single_range_check(
+            current_index, start_index, end_index, tensor_size
+        )
         if contained:
             results.append((contained, offset, comm_idx))
     if len(results) == 0:
@@ -107,24 +114,27 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
     This version aligns with stage-1 in the paper above.
     """
-    def __init__(self,
-                 init_optimizer,
-                 static_loss_scale=1.0,
-                 dynamic_loss_scale=False,
-                 dynamic_loss_args=None,
-                 verbose=True,
-                 dp_process_group=None,
-                 partition_size=None,
-                 mpu=None,
-                 all_gather_partitions=True,
-                 allgather_size=500000000,
-                 clip_grad=0.0,
-                 max_elements_per_comm=5e8,
-                 elastic_checkpoint=True,
-                 precision=torch.half):
-                 postscale_gradients=True,
-                 gradient_predivide_factor=1.0,
-                 gradient_average=True):
+
+    def __init__(
+        self,
+        init_optimizer,
+        static_loss_scale=1.0,
+        dynamic_loss_scale=False,
+        dynamic_loss_args=None,
+        verbose=True,
+        dp_process_group=None,
+        partition_size=None,
+        mpu=None,
+        all_gather_partitions=True,
+        allgather_size=500000000,
+        clip_grad=0.0,
+        max_elements_per_comm=5e8,
+        elastic_checkpoint=True,
+        precision=torch.half,
+        postscale_gradients=True,
+        gradient_predivide_factor=1.0,
+        gradient_average=True,
+    ):
 
         # Load pre-built or JIT compile (un)flatten ops
         util_ops = UtilsBuilder().load()
@@ -139,8 +149,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             self.fp32_allreduce = False
 
         if dp_process_group is not None and partition_size is not None:
-            raise ValueError("Cannot specify both dp_process_group "
-                             "and partition size")
+            raise ValueError(
+                "Cannot specify both dp_process_group " "and partition size"
+            )
 
         if dp_process_group is None:
             dp_process_group = _initialize_parameter_parallel_groups(partition_size)
@@ -155,7 +166,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         self.postscale_gradients = postscale_gradients
         self.gradient_predivide_factor = gradient_predivide_factor
         self.gradient_average = gradient_average
-        self._global_grad_norm = 0.
+        self._global_grad_norm = 0.0
 
         # TODO: automatically turn off if #params > some_limit
         self.all_gather_partitions = all_gather_partitions
@@ -165,7 +176,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         # logger.info("max_elements_per_comm={}".format(max_elements_per_comm))
 
         self.elastic_checkpoint = elastic_checkpoint
-        logger.info(f'ZeRO Elastic Checkpoint = {elastic_checkpoint}')
+        logger.info(f"ZeRO Elastic Checkpoint = {elastic_checkpoint}")
 
         # param flattened by groups
         self.fp16_groups = []
@@ -206,7 +217,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         self.group_paddings = []
         self.partition_count = dist.get_world_size(group=self.dp_process_group)
 
-        self.default_device = self.optimizer.param_groups[0]['params'][0].device
+        self.default_device = self.optimizer.param_groups[0]["params"][0].device
 
         # max elems per param group
         self.max_elems_per_comm = []
@@ -214,14 +225,16 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         # loop to deal with groups
         for i, param_group in enumerate(self.optimizer.param_groups):
             # push this group to list before modify
-            self.fp16_groups.append(param_group['params'])
+            self.fp16_groups.append(param_group["params"])
 
             # calculate best max elements per comm based to minimize padding
             self.max_elems_per_comm.append(
                 self.best_max_elems_per_comm(
                     num_elements=sum(t.numel() for t in self.fp16_groups[i]),
                     max_elements_per_comm=max_elements_per_comm,
-                    dp=dist.get_world_size(group=self.dp_process_group)))
+                    dp=dist.get_world_size(group=self.dp_process_group),
+                )
+            )
 
             # flattens all tensors into single 1d tensor aligned with sub-partition size for later dividing
             # RS: create aligned sub-partitions
@@ -229,31 +242,39 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                 tensor_list=self.fp16_groups[i],
                 dp=dist.get_world_size(group=self.dp_process_group),
                 max_elements_per_comm=self.max_elems_per_comm[i],
-                pg=self.dp_process_group)
+                pg=self.dp_process_group,
+            )
             self.fp16_groups_flat.append(flat_aligned_params)
 
             # TODO: I don't think this does anything?
             # set model fp16 weight to slices of flattened buffer
-            updated_params = self.unflatten(self.fp16_groups_flat[i],
-                                            self.fp16_groups[i])
+            updated_params = self.unflatten(
+                self.fp16_groups_flat[i], self.fp16_groups[i]
+            )
             for p, q in zip(self.fp16_groups[i], updated_params):
                 p.data = q.data
 
             # divide the flat weights into near equal partition equal to the data parallel degree
             # each process will compute on a different part of the partition
             # RS: split into two layer list -> [comm-id] -> [sub-partitions per rank]
-            comm_partitions, dp_sub_partitions, element_intervals, sub_partition_size, num_comm_intervals = \
-                self.get_data_parallel_sub_partitions(
-                    tensor=self.fp16_groups_flat[i],
-                    max_elements_per_comm=self.max_elems_per_comm[i],
-                    world_size=dist.get_world_size(
-                        group=self.dp_process_group),
-                    dp_process_group=self.dp_process_group
-                )
+            (
+                comm_partitions,
+                dp_sub_partitions,
+                element_intervals,
+                sub_partition_size,
+                num_comm_intervals,
+            ) = self.get_data_parallel_sub_partitions(
+                tensor=self.fp16_groups_flat[i],
+                max_elements_per_comm=self.max_elems_per_comm[i],
+                world_size=dist.get_world_size(group=self.dp_process_group),
+                dp_process_group=self.dp_process_group,
+            )
             self.parallel_comm_sub_partitioned_fp16_groups.append(
-                comm_partitions)  # comm -> rank
+                comm_partitions
+            )  # comm -> rank
             self.parallel_sub_partitioned_fp16_groups.append(
-                dp_sub_partitions)  # rank -> comm
+                dp_sub_partitions
+            )  # rank -> comm
             self.sub_partition_sizes.append(sub_partition_size)
             self.num_comm_intervals_per_group.append(num_comm_intervals)
             # data_parallel_partitions = self.get_data_parallel_partitions(self.fp16_groups_flat[i])
@@ -263,7 +284,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             # RS: store/detach/cast our local sub-partitions
             local_sub_partitions = []
             for sub_partition in self.parallel_sub_partitioned_fp16_groups[i][
-                    local_rank]:
+                local_rank
+            ]:
                 fp32_sub_partition = sub_partition.clone().float().detach()
                 fp32_sub_partition.requires_grad = True
                 local_sub_partitions.append(fp32_sub_partition)
@@ -273,26 +295,32 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             sub_partition_paddings = get_group_alignment_padding(
                 tensor_list=self.fp16_groups[i],
                 sub_partition_size=sub_partition_size,
-                sub_partition_count=num_comm_intervals * self.partition_count)
+                sub_partition_count=num_comm_intervals * self.partition_count,
+            )
             self.group_paddings.append(sub_partition_paddings)
 
             # modify optimizer of have flat master weight
             # self.single_partition_of_fp32_groups[i].requires_grad = True # keep this in case internal optimizer uses it
-            param_group['params'] = self.local_sub_partitions_of_fp32_groups[i]
+            param_group["params"] = self.local_sub_partitions_of_fp32_groups[i]
 
             # RS: divide up the sub-partitions and keep track of offsets for each param
             # partition_size = len(self.fp16_groups_flat[i]) / dist.get_world_size(group=self.dp_process_group)
-            params_in_rank_sub_partition, params_in_rank_sub_partitions_offsets, params_not_local = self.get_all_sub_partition_info(
+            (
+                params_in_rank_sub_partition,
+                params_in_rank_sub_partitions_offsets,
+                params_not_local,
+            ) = self.get_all_sub_partition_info(
                 tensor_list=self.fp16_groups[i],
                 all_element_intervals=element_intervals,
                 local_rank=local_rank,
-                world_size=dist.get_world_size(group=self.dp_process_group)
+                world_size=dist.get_world_size(group=self.dp_process_group),
             )
 
             self.params_in_rank_sub_partitions.append(params_in_rank_sub_partition)
             self.params_not_local.append(params_not_local)
             self.params_in_rank_sub_partitions_offsets.append(
-                params_in_rank_sub_partitions_offsets)
+                params_in_rank_sub_partitions_offsets
+            )
 
         # we may have a way of fusing dynamic scale. Do not support for now
         if dynamic_loss_scale:
@@ -312,18 +340,19 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         self.clip_grad = clip_grad
 
         self.overflow = False
-        self.overflow_checker = CheckOverflow(self.fp16_groups,
-                                              mpu=self.mpu,
-                                              zero_reduce_scatter=True)
+        self.overflow_checker = CheckOverflow(
+            self.fp16_groups, mpu=self.mpu, zero_reduce_scatter=True
+        )
 
         self._initialize_optimizer_states()
 
     def _initialize_optimizer_states(self):
         for group_idx, group in enumerate(self.local_sub_partitions_of_fp32_groups):
             for idx, sub_partition_param in enumerate(group):
-                sub_partition_grad = torch.zeros(int(
-                    self.sub_partition_sizes[group_idx]),
-                                                 dtype=sub_partition_param.dtype).cuda()
+                sub_partition_grad = torch.zeros(
+                    int(self.sub_partition_sizes[group_idx]),
+                    dtype=sub_partition_param.dtype,
+                ).cuda()
                 sub_partition_param.grad = sub_partition_grad
 
         self.optimizer.step()
@@ -336,14 +365,17 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
     def best_max_elems_per_comm(num_elements, max_elements_per_comm, dp):
         # if we use max-elems-per-comm as is, how many comm intervals will there be
         max_comm_intervals = math.ceil(num_elements / max_elements_per_comm)
-        padding_for_max_comm = (max_elements_per_comm *
-                                max_comm_intervals) - num_elements
+        padding_for_max_comm = (
+            max_elements_per_comm * max_comm_intervals
+        ) - num_elements
 
         # if we use 1 less comm interval how much extra comm padding would be required
         min_comm_intervals = num_elements // max_elements_per_comm
         if min_comm_intervals == 0:
-            log_dist(f'Using default max_elements_per_comm {max_elements_per_comm}',
-                     ranks=[0])
+            log_dist(
+                f"Using default max_elements_per_comm {max_elements_per_comm}",
+                ranks=[0],
+            )
             return max_elements_per_comm
 
         padding_for_min_comm = math.ceil(num_elements / (dp * min_comm_intervals))
@@ -352,19 +384,21 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         if padding_for_max_comm > padding_for_min_comm:
             new_max_elements_per_comm = padding_for_min_comm + max_elements_per_comm
             log_dist(
-                f'Updating max_elements_per_comm from {max_elements_per_comm} -> {new_max_elements_per_comm}',
-                ranks=[0])
+                f"Updating max_elements_per_comm from {max_elements_per_comm} -> {new_max_elements_per_comm}",
+                ranks=[0],
+            )
             return new_max_elements_per_comm
         else:
-            log_dist(f'Using default max_elements_per_comm {max_elements_per_comm}',
-                     ranks=[0])
+            log_dist(
+                f"Using default max_elements_per_comm {max_elements_per_comm}",
+                ranks=[0],
+            )
             return max_elements_per_comm
 
     @staticmethod
-    def get_data_parallel_sub_partitions(tensor,
-                                         max_elements_per_comm,
-                                         world_size,
-                                         dp_process_group=None):
+    def get_data_parallel_sub_partitions(
+        tensor, max_elements_per_comm, world_size, dp_process_group=None
+    ):
         total_num_elements = tensor.numel()
 
         # if total elements is less than our max, revert to splitting into dp partitions
@@ -373,11 +407,15 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
         # Ensure partition alignment was done correctly
         num_sub_partitions = int(total_num_elements // sub_partition_size)
-        assert total_num_elements % sub_partition_size == 0, "{} % {} != 0".format(total_num_elements, sub_partition_size)
+        assert total_num_elements % sub_partition_size == 0, "{} % {} != 0".format(
+            total_num_elements, sub_partition_size
+        )
 
         # Ensure comm interval alignment was done correctly.
         num_comm_intervals = int(num_sub_partitions // world_size)
-        assert num_sub_partitions % world_size == 0, "{} % {} != 0".format(num_sub_partitions, world_size)
+        assert num_sub_partitions % world_size == 0, "{} % {} != 0".format(
+            num_sub_partitions, world_size
+        )
 
         if not dist.is_initialized() or dist.get_rank(group=dp_process_group) == 0:
             logger.info("**** partition info:")
@@ -397,7 +435,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         start = 0
         comm_id = 0
         element_intervals = defaultdict(
-            list)  # [rank] -> [(start,end), (start,end), ...]
+            list
+        )  # [rank] -> [(start,end), (start,end), ...]
         for idx in range(num_sub_partitions):
             rank_id = idx % world_size
             sub_partition = tensor.narrow(0, start, sub_partition_size).detach()
@@ -415,13 +454,18 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             for rank_id, partition in enumerate(partitions):
                 sub_partitions[rank_id].append(partition)
 
-        return comm_partitions, sub_partitions, element_intervals, sub_partition_size, num_comm_intervals
+        return (
+            comm_partitions,
+            sub_partitions,
+            element_intervals,
+            sub_partition_size,
+            num_comm_intervals,
+        )
 
     @staticmethod
-    def get_all_sub_partition_info(tensor_list,
-                                   all_element_intervals,
-                                   local_rank,
-                                   world_size):
+    def get_all_sub_partition_info(
+        tensor_list, all_element_intervals, local_rank, world_size
+    ):
         params_not_local = []
 
         # [rank] -> [comm-id] -> [param/offset]
@@ -437,14 +481,14 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             prev_comm_idx = 0
             for iii, tensor in enumerate(tensor_list):
                 tensor_size = tensor.numel()
-                #if local_rank == 0:
+                # if local_rank == 0:
                 #    # logger.info("rank={}, current_index={}, tensor_size={}, tensor-idx={}".format(rank,
                 #        current_index, tensor_size, iii))
-                results_list = _range_check(current_index,
-                                            all_element_intervals[rank],
-                                            tensor_size)
+                results_list = _range_check(
+                    current_index, all_element_intervals[rank], tensor_size
+                )
                 for contained, offset, comm_idx in results_list:
-                    #if local_rank == 0:
+                    # if local_rank == 0:
                     #    logger.info("rank={}, contained={}, offset={}, comm_idx={}".format(rank, contained,
                     #        offset, comm_idx))
                     if contained:
@@ -461,24 +505,30 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
                 current_index = current_index + tensor_size
 
-            #assert len(comm_tensor_list) > 0
-            #assert len(comm_offset_list) > 0
+            # assert len(comm_tensor_list) > 0
+            # assert len(comm_offset_list) > 0
             params_in_local_sub_partition.append(comm_tensor_list)
             local_sub_partition_offsets.append(comm_offset_list)
 
             params_in_rank_sub_partition.append(params_in_local_sub_partition)
             params_in_rank_sub_partitions_offsets.append(local_sub_partition_offsets)
 
-        return params_in_rank_sub_partition, params_in_rank_sub_partitions_offsets, params_not_local
+        return (
+            params_in_rank_sub_partition,
+            params_in_rank_sub_partitions_offsets,
+            params_not_local,
+        )
 
-    def get_flat_sub_partitions(self,
-                                comm_tensor_list,
-                                comm_param_offsets,
-                                sub_partition_size,
-                                dtype,
-                                default_device,
-                                num_comm_intervals=None,
-                                return_partition_params=False):
+    def get_flat_sub_partitions(
+        self,
+        comm_tensor_list,
+        comm_param_offsets,
+        sub_partition_size,
+        dtype,
+        default_device,
+        num_comm_intervals=None,
+        return_partition_params=False,
+    ):
 
         partition_params = []
         final_param_offsets = []
@@ -491,15 +541,15 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
             for i, tensor in enumerate(tensor_list):
                 if tensor.grad is None:
-                    tensor.grad = torch.zeros(tensor.size(),
-                                              dtype=tensor.dtype,
-                                              device=tensor.device)
+                    tensor.grad = torch.zeros(
+                        tensor.size(), dtype=tensor.dtype, device=tensor.device
+                    )
                 param = tensor
                 tensor = tensor.grad
                 num_elements = tensor.numel()
                 tensor_offset = 0
 
-                #we need to offset to get to the right element
+                # we need to offset to get to the right element
                 if i == 0 and param_offsets[i] > 0:
                     tensor_offset = param_offsets[i]
                     num_elements = num_elements - tensor_offset
@@ -509,56 +559,69 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                 if num_elements > (sub_partition_size - current_size):
                     num_elements = sub_partition_size - current_size
 
-                #we need a narrow view of the tensor based on the tensor offset and number of elements that
-                #we need from this tensor
+                # we need a narrow view of the tensor based on the tensor offset and number of elements that
+                # we need from this tensor
                 if tensor_offset > 0 or num_elements < tensor.numel():
-                    flat_tensor_list.append(tensor.contiguous().view(-1).narrow(
-                        0,
-                        int(tensor_offset),
-                        int(num_elements)).to(dtype))
+                    flat_tensor_list.append(
+                        tensor.contiguous()
+                        .view(-1)
+                        .narrow(0, int(tensor_offset), int(num_elements))
+                        .to(dtype)
+                    )
                 else:
                     flat_tensor_list.append(tensor.to(dtype))
                 my_params.append(param)
 
-                #remember offset into partition and #elems for this tensor
+                # remember offset into partition and #elems for this tensor
                 my_offsets.append((current_size, num_elements))
 
                 current_size = current_size + num_elements
 
-            #this means its the last partition and does not align with the dp boundary. We need to pad before flattening
+            # this means its the last partition and does not align with the dp boundary. We need to pad before flattening
             if current_size < sub_partition_size:
                 my_offsets.append((None, None))
                 my_params.append(None)
                 if len(tensor_list) == 0:
                     assert default_device != None
                     flat_tensor_list.append(
-                        torch.zeros(int(sub_partition_size - current_size),
-                                    dtype=dtype,
-                                    device=default_device))
+                        torch.zeros(
+                            int(sub_partition_size - current_size),
+                            dtype=dtype,
+                            device=default_device,
+                        )
+                    )
                 else:
                     flat_tensor_list.append(
-                        torch.zeros(int(sub_partition_size - current_size),
-                                    dtype=dtype,
-                                    device=tensor_list[0].device))
-            partition_params.append(my_params)  #flat_tensor_list)
+                        torch.zeros(
+                            int(sub_partition_size - current_size),
+                            dtype=dtype,
+                            device=tensor_list[0].device,
+                        )
+                    )
+            partition_params.append(my_params)  # flat_tensor_list)
             final_param_offsets.append(my_offsets)
-            assert len(flat_tensor_list) == len(my_offsets), "{} {}".format(len(flat_tensor_list), len(my_offsets))
+            assert len(flat_tensor_list) == len(my_offsets), "{} {}".format(
+                len(flat_tensor_list), len(my_offsets)
+            )
             flat_sub_partitions.append(self.flatten(flat_tensor_list))
-        if num_comm_intervals is not None and len(
-                flat_sub_partitions) < num_comm_intervals:
+        if (
+            num_comm_intervals is not None
+            and len(flat_sub_partitions) < num_comm_intervals
+        ):
             # logger.info("padding w. sub partitions to ensure uniform communication")
             device = flat_sub_partitions[0].device
             for _ in range(num_comm_intervals - len(flat_sub_partitions)):
                 flat_sub_partitions.append(
-                    torch.zeros(int(sub_partition_size),
-                                dtype=dtype,
-                                device=device))
+                    torch.zeros(int(sub_partition_size), dtype=dtype, device=device)
+                )
                 partition_params.append([None])
                 final_param_offsets.append([(None, None)])
 
         if return_partition_params:
             assert len(flat_sub_partitions) == len(partition_params)
-            assert len(partition_params) == len(final_param_offsets), "{} {}".format(len(partition_params), len(final_param_offsets))
+            assert len(partition_params) == len(final_param_offsets), "{} {}".format(
+                len(partition_params), len(final_param_offsets)
+            )
             return flat_sub_partitions, partition_params, final_param_offsets
         return flat_sub_partitions
 
@@ -585,19 +648,20 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             else:
                 p.grad = None
 
-    def flatten_dense_tensors_sub_partition_aligned(self,
-                                                    tensor_list,
-                                                    dp,
-                                                    max_elements_per_comm,
-                                                    pg):
-        assert max_elements_per_comm >= dp, f"max_elements_per_comm {max_elements_per_comm} < dp {dp}"
+    def flatten_dense_tensors_sub_partition_aligned(
+        self, tensor_list, dp, max_elements_per_comm, pg
+    ):
+        assert (
+            max_elements_per_comm >= dp
+        ), f"max_elements_per_comm {max_elements_per_comm} < dp {dp}"
 
         num_elements = sum(t.numel() for t in tensor_list)
         log_dist(
             "Total number of elements in model: {}, max elements per com: {}".format(
-                num_elements,
-                max_elements_per_comm),
-            ranks=[0])
+                num_elements, max_elements_per_comm
+            ),
+            ranks=[0],
+        )
 
         # Compute aligned partition size based on parameter count
         aligned_param_partition_size = math.ceil(num_elements / dp)
@@ -609,8 +673,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             sub_partition_count = 1
             sub_partition_size = aligned_param_partition_size
         else:
-            sub_partition_count = math.ceil(aligned_param_partition_size /
-                                            aligned_comm_partition_size)
+            sub_partition_count = math.ceil(
+                aligned_param_partition_size / aligned_comm_partition_size
+            )
             sub_partition_size = aligned_comm_partition_size
 
         # Compute required padding  for alignment to dp and max_elements_per_comm
@@ -618,17 +683,19 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
         log_dist(
             f"sub_partition_count: {sub_partition_count}, sub_partition_size: {sub_partition_size}, padding: {padding}",
-            ranks=[0])
+            ranks=[0],
+        )
         log_dist(
             f"number of elements with padding: {num_elements} + {padding} = {num_elements + padding}",
-            ranks=[0])
+            ranks=[0],
+        )
 
         if padding == 0:
             aligned_tensor_list = tensor_list
         else:
-            pad_tensor = torch.zeros(padding,
-                                     device=tensor_list[0].device,
-                                     dtype=tensor_list[0].dtype)
+            pad_tensor = torch.zeros(
+                padding, device=tensor_list[0].device, dtype=tensor_list[0].dtype
+            )
             aligned_tensor_list = tensor_list + [pad_tensor]
 
         flat_tensors = self.flatten(aligned_tensor_list)
@@ -649,12 +716,14 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                 # gsp is list of partitions indexed by comm_idx
                 grad_sub_partitions = self.get_flat_sub_partitions(
                     comm_tensor_list=self.params_in_rank_sub_partitions[i][rank],
-                    comm_param_offsets=self.params_in_rank_sub_partitions_offsets[i]
-                    [rank],
+                    comm_param_offsets=self.params_in_rank_sub_partitions_offsets[i][
+                        rank
+                    ],
                     dtype=self.precision,
                     default_device=self.default_device,
                     sub_partition_size=self.sub_partition_sizes[i],
-                    num_comm_intervals=self.num_comm_intervals_per_group[i])
+                    num_comm_intervals=self.num_comm_intervals_per_group[i],
+                )
                 all_sub_partitions.append(grad_sub_partitions)
 
                 assert len(grad_sub_partitions) == num_comm_intervals
@@ -664,34 +733,45 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                 single_comm_all_partitions = []
                 for rank in range(world_size):
                     if self.fp32_allreduce:
-                        single_comm_all_partitions.append(all_sub_partitions[rank][comm_idx].float())
+                        single_comm_all_partitions.append(
+                            all_sub_partitions[rank][comm_idx].float()
+                        )
                     else:
-                        single_comm_all_partitions.append(all_sub_partitions[rank][comm_idx])
+                        single_comm_all_partitions.append(
+                            all_sub_partitions[rank][comm_idx]
+                        )
 
                 if postscale_gradients:
                     if gradient_predivide_factor != 1.0:
                         for partition in single_comm_all_partitions:
-                            partition.mul_(1. / gradient_predivide_factor)
+                            partition.mul_(1.0 / gradient_predivide_factor)
 
-                    dist.reduce_scatter(output=single_comm_all_partitions[local_rank],
-                                        input_list=single_comm_all_partitions,
-                                        group=self.dp_process_group)
+                    dist.reduce_scatter(
+                        output=single_comm_all_partitions[local_rank],
+                        input_list=single_comm_all_partitions,
+                        group=self.dp_process_group,
+                    )
 
                     if gradient_average:
                         # Only need to average our local grads in post scaling
                         if gradient_predivide_factor != world_size:
                             single_comm_all_partitions[local_rank].mul_(
-                                gradient_predivide_factor / world_size)
+                                gradient_predivide_factor / world_size
+                            )
                 else:
                     for partition in single_comm_all_partitions:
                         partition.div_(world_size)
 
-                    dist.reduce_scatter(output=single_comm_all_partitions[local_rank],
-                                        input_list=single_comm_all_partitions,
-                                        group=self.dp_process_group)
+                    dist.reduce_scatter(
+                        output=single_comm_all_partitions[local_rank],
+                        input_list=single_comm_all_partitions,
+                        group=self.dp_process_group,
+                    )
                 if self.fp32_allreduce:
                     for rank in range(world_size):
-                        all_sub_partitions[rank][comm_idx] = all_sub_partitions[rank][comm_idx].to(self.precision)
+                        all_sub_partitions[rank][comm_idx] = all_sub_partitions[rank][
+                            comm_idx
+                        ].to(self.precision)
 
     def step(self, closure=None, comms_timer=None):
         # First compute norm for all group so we know if there is overflow
@@ -704,8 +784,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             if self.verbose:
                 logger.info(
                     "[deepspeed] fp16 dynamic loss scale overflow! Skipping step. Attempted loss "
-                    "scale: {}, reducing to {}".format(prev_scale,
-                                                       self.loss_scale))
+                    "scale: {}, reducing to {}".format(prev_scale, self.loss_scale)
+                )
             return self.overflow
 
         norm_groups = []
@@ -713,71 +793,83 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
         partition_id = dist.get_rank(group=self.dp_process_group)
         for i, group in enumerate(self.fp16_groups):
-            #TODO RS: update get grad norm to support sub partitions
+            # TODO RS: update get grad norm to support sub partitions
             norm_groups.append(get_grad_norm(group, mpu=self.mpu))
 
-            #RS: update free grads w.r.t. sub partitions
-            #free gradients for all the parameters that are not updated by this process
+            # RS: update free grads w.r.t. sub partitions
+            # free gradients for all the parameters that are not updated by this process
             self.free_grad_in_param_list(self.params_not_local[i])
 
             # create flat gradient partitions for parameters updated by this process
             local_grad_sub_partitions = self.get_flat_sub_partitions(
                 comm_tensor_list=self.params_in_rank_sub_partitions[i][partition_id],
-                comm_param_offsets=self.params_in_rank_sub_partitions_offsets[i]
-                [partition_id],
+                comm_param_offsets=self.params_in_rank_sub_partitions_offsets[i][
+                    partition_id
+                ],
                 sub_partition_size=self.sub_partition_sizes[i],
                 dtype=self.local_sub_partitions_of_fp32_groups[i][0].dtype,
                 num_comm_intervals=self.num_comm_intervals_per_group[i],
-                default_device=self.default_device)
+                default_device=self.default_device,
+            )
 
-            #RS: update all our local params with sub-partition grads
-            for idx, sub_partition_param in enumerate(self.local_sub_partitions_of_fp32_groups[i]):
+            # RS: update all our local params with sub-partition grads
+            for idx, sub_partition_param in enumerate(
+                self.local_sub_partitions_of_fp32_groups[i]
+            ):
                 sub_partition_param.grad = local_grad_sub_partitions[idx]
 
-            #RS: update free grads for sub-partitions
-            #release all the gradient since we have already created a necessary copy in dp_grad_partition
+            # RS: update free grads for sub-partitions
+            # release all the gradient since we have already created a necessary copy in dp_grad_partition
             self.free_grad_in_param_list(
-                self.params_in_rank_sub_partitions[i][partition_id])
+                self.params_in_rank_sub_partitions[i][partition_id]
+            )
 
             local_sub_partitions_grad_groups.append(local_grad_sub_partitions)
 
         self._global_grad_norm = get_global_norm(norm_list=norm_groups)
 
-        #RS: update unscale/clip with sub partitions
-        self.unscale_and_clip_grads(local_sub_partitions_grad_groups,
-                                    self._global_grad_norm)
-
+        # RS: update unscale/clip with sub partitions
+        self.unscale_and_clip_grads(
+            local_sub_partitions_grad_groups, self._global_grad_norm
+        )
 
         self.optimizer.step()
 
-        #RS: clear our sub partition grads
-        #get rid of the fp32 gradients. Not needed anymore
+        # RS: clear our sub partition grads
+        # get rid of the fp32 gradients. Not needed anymore
         for group in self.local_sub_partitions_of_fp32_groups:
             for idx, sub_partition_param in enumerate(group):
                 sub_partition_param.grad = None
-            #group.grad = None
+            # group.grad = None
 
-        #NOTE RS: removed norm_groups outer loop from original code, i don't think it's needed
-        #RS: copy all sub-partition fp32 data to fp16 sub partitions
+        # NOTE RS: removed norm_groups outer loop from original code, i don't think it's needed
+        # RS: copy all sub-partition fp32 data to fp16 sub partitions
         # copy fp32 param data to fp16 partitions w.r.t. our local rank
-        for fp16_all_sub_partitions, fp32_local_sub_partitions in zip(self.parallel_sub_partitioned_fp16_groups, self.local_sub_partitions_of_fp32_groups):
-            for local_sub_partition_param_fp16, local_sub_partition_param_fp32 in zip(fp16_all_sub_partitions[partition_id], fp32_local_sub_partitions):
+        for fp16_all_sub_partitions, fp32_local_sub_partitions in zip(
+            self.parallel_sub_partitioned_fp16_groups,
+            self.local_sub_partitions_of_fp32_groups,
+        ):
+            for local_sub_partition_param_fp16, local_sub_partition_param_fp32 in zip(
+                fp16_all_sub_partitions[partition_id], fp32_local_sub_partitions
+            ):
                 local_sub_partition_param_fp16.data.copy_(
-                    local_sub_partition_param_fp32.data)
-
+                    local_sub_partition_param_fp32.data
+                )
 
         if comms_timer is not None:
             comms_timer.start()
-        #RS: all_gather/broadcast sub-partitions in separate comm calls
-        #gather the updated weights from everyone
+        # RS: all_gather/broadcast sub-partitions in separate comm calls
+        # gather the updated weights from everyone
         for fp16_all_sub_partitions in self.parallel_comm_sub_partitioned_fp16_groups:
             for comm_id, sub_partitions in enumerate(fp16_all_sub_partitions):
                 if self.fp32_allreduce:
                     for i in range(len(sub_partitions)):
                         sub_partitions[i] = sub_partitions[i].float()
-                dist.all_gather(sub_partitions,
-                                sub_partitions[partition_id],
-                                group=self.dp_process_group)
+                dist.all_gather(
+                    sub_partitions,
+                    sub_partitions[partition_id],
+                    group=self.dp_process_group,
+                )
                 if self.fp32_allreduce:
                     for i in range(len(sub_partitions)):
                         sub_partitions[i] = sub_partitions[i].to(self.precision)
@@ -786,8 +878,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
         # TODO: we probably don't need this? just to be safe
         for i in range(len(norm_groups)):
-            updated_params = self.unflatten(self.fp16_groups_flat[i],
-                                            self.fp16_groups[i])
+            updated_params = self.unflatten(
+                self.fp16_groups_flat[i], self.fp16_groups[i]
+            )
             for p, q in zip(self.fp16_groups[i], updated_params):
                 p.data = q.data
         return self.overflow
@@ -795,7 +888,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
     def unscale_and_clip_grads(self, grad_groups_flat, total_norm):
         # compute combined scale factor for this group
         combined_scale = self.loss_scale
-        if self.clip_grad > 0.:
+        if self.clip_grad > 0.0:
             # norm is in fact norm*scale
             clip = ((total_norm / self.loss_scale) + 1e-6) / self.clip_grad
             if clip > 1:
@@ -805,9 +898,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             if isinstance(grad, list):
                 sub_partitions = grad
                 for g in sub_partitions:
-                    g.data.mul_(1. / combined_scale)
+                    g.data.mul_(1.0 / combined_scale)
             else:
-                grad.data.mul_(1. / combined_scale)
+                grad.data.mul_(1.0 / combined_scale)
 
     def backward(self, loss, retain_graph=False):
         self.loss_scaler.backward(loss.float(), retain_graph=retain_graph)
@@ -894,9 +987,10 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             param_paddings = self._get_local_group_paddings(group_index)
 
             group_lean_state = []
-            for param_idx, param in enumerate(group['params']):
-                lean_state = self._get_state_without_padding(self.optimizer.state[param],
-                                                             param_paddings[param_idx])
+            for param_idx, param in enumerate(group["params"]):
+                lean_state = self._get_state_without_padding(
+                    self.optimizer.state[param], param_paddings[param_idx]
+                )
                 group_lean_state.append(lean_state)
 
             optimizer_groups_state.append(group_lean_state)
@@ -918,12 +1012,13 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             torch.save(checkpoint, "saved.pth")
         """
         state_dict = {}
-        state_dict['loss_scaler'] = self.loss_scaler
-        state_dict['dynamic_loss_scale'] = self.dynamic_loss_scale
-        state_dict['overflow'] = self.overflow
-        state_dict['base_optimizer_state'] = self.optimizer.state_dict()
+        state_dict["loss_scaler"] = self.loss_scaler
+        state_dict["dynamic_loss_scale"] = self.dynamic_loss_scale
+        state_dict["overflow"] = self.overflow
+        state_dict["base_optimizer_state"] = self.optimizer.state_dict()
         state_dict[
-            'local_sub_partitions_of_fp32_groups'] = self.local_sub_partitions_of_fp32_groups
+            "local_sub_partitions_of_fp32_groups"
+        ] = self.local_sub_partitions_of_fp32_groups
         return state_dict
 
     def _elastic_state_dict(self):
@@ -931,19 +1026,20 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             Returns a dict that can be loaded for elastic training with different DP degree
         """
         state_dict = {}
-        state_dict['loss_scaler'] = self.loss_scaler
-        state_dict['dynamic_loss_scale'] = self.dynamic_loss_scale
-        state_dict['overflow'] = self.overflow
-        state_dict['base_optimizer_state'] = self._get_base_optimizer_state()
+        state_dict["loss_scaler"] = self.loss_scaler
+        state_dict["dynamic_loss_scale"] = self.dynamic_loss_scale
+        state_dict["overflow"] = self.overflow
+        state_dict["base_optimizer_state"] = self._get_base_optimizer_state()
 
-        state_dict['zero_stage'] = ZERO_OPTIMIZATION_OPTIMIZER_STATES
-        state_dict['partition_count'] = self.partition_count
-        state_dict['num_comm_intervals_per_group'] = self.num_comm_intervals_per_group
+        state_dict["zero_stage"] = ZERO_OPTIMIZATION_OPTIMIZER_STATES
+        state_dict["partition_count"] = self.partition_count
+        state_dict["num_comm_intervals_per_group"] = self.num_comm_intervals_per_group
 
         # Remove paddings for DP alignment to enable loading for other alignment values
         fp32_groups_without_padding = self._get_groups_without_padding(
-            self.local_sub_partitions_of_fp32_groups)
-        state_dict['local_sub_partitions_of_fp32_groups'] = fp32_groups_without_padding
+            self.local_sub_partitions_of_fp32_groups
+        )
+        state_dict["local_sub_partitions_of_fp32_groups"] = fp32_groups_without_padding
 
         return state_dict
 
@@ -970,9 +1066,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
     # rank 0 = [sub_0_0, sub_0_1]
     # rank 1 = [sub_1_0, sub_1_1]
     # Merge to get [sub_0_0, sub_1_0, sub_0_1, sub_1_1] => original un-padded flattened tensor.
-    def _retrieve_group_sub_partition_weights(self,
-                                              all_partition_fp32_weights,
-                                              max_elems_per_comm):
+    def _retrieve_group_sub_partition_weights(
+        self, all_partition_fp32_weights, max_elems_per_comm
+    ):
         num_partitions = len(all_partition_fp32_weights)
         num_comm_intervals = len(all_partition_fp32_weights[0])
         num_sub_partitions = num_partitions * num_comm_intervals
@@ -980,7 +1076,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
         for rank, partition_weights in enumerate(all_partition_fp32_weights):
             for comm_idx, sub_partition_weights in enumerate(partition_weights):
-                #all_sub_partition_weights.append(sub_partition_weights)
+                # all_sub_partition_weights.append(sub_partition_weights)
                 sub_partition_idx = (comm_idx * num_partitions) + rank
                 all_sub_partition_weights[sub_partition_idx] = sub_partition_weights
 
@@ -988,15 +1084,21 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             tensor_list=all_sub_partition_weights,
             dp=dist.get_world_size(group=self.dp_process_group),
             max_elements_per_comm=max_elems_per_comm,
-            pg=self.dp_process_group)
+            pg=self.dp_process_group,
+        )
 
-        comm_partitions, dp_sub_partitions, element_intervals, sub_partition_size, num_comm_intervals = \
-            self.get_data_parallel_sub_partitions(
-                tensor=flat_merged_weights,
-                max_elements_per_comm=max_elems_per_comm,
-                world_size=dist.get_world_size(group=self.dp_process_group),
-                dp_process_group=self.dp_process_group
-            )
+        (
+            comm_partitions,
+            dp_sub_partitions,
+            element_intervals,
+            sub_partition_size,
+            num_comm_intervals,
+        ) = self.get_data_parallel_sub_partitions(
+            tensor=flat_merged_weights,
+            max_elements_per_comm=max_elems_per_comm,
+            world_size=dist.get_world_size(group=self.dp_process_group),
+            dp_process_group=self.dp_process_group,
+        )
 
         partition_id = dist.get_rank(group=self.dp_process_group)
         return [sub_partition for sub_partition in dp_sub_partitions[partition_id]]
@@ -1009,25 +1111,26 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         sub_partition_of_fp32_groups = []
         for group_idx in range(len(self.local_sub_partitions_of_fp32_groups)):
             all_partition_fp32_weights = [
-                sd['local_sub_partitions_of_fp32_groups'][group_idx]
+                sd["local_sub_partitions_of_fp32_groups"][group_idx]
                 for sd in all_state_dict
             ]
             max_elems_per_comm = self.max_elems_per_comm[group_idx]
 
             sub_partition_weights = self._retrieve_group_sub_partition_weights(
-                all_partition_fp32_weights,
-                max_elems_per_comm)
+                all_partition_fp32_weights, max_elems_per_comm
+            )
             sub_partition_of_fp32_groups.append(sub_partition_weights)
 
-        for current_group, saved_group in zip(self.local_sub_partitions_of_fp32_groups, sub_partition_of_fp32_groups):
+        for current_group, saved_group in zip(
+            self.local_sub_partitions_of_fp32_groups, sub_partition_of_fp32_groups
+        ):
             for current_sub_part, saved_sub_part in zip(current_group, saved_group):
                 current_sub_part.data.copy_(saved_sub_part.data)
 
     # Extract optimizer state for current partition from merged states of all partitions
-    def _partition_base_optimizer_state(self,
-                                        state_key,
-                                        all_partition_states,
-                                        max_elems_per_comm):
+    def _partition_base_optimizer_state(
+        self, state_key, all_partition_states, max_elems_per_comm
+    ):
         if not torch.is_tensor(all_partition_states[0]):
             return all_partition_states[0]
 
@@ -1036,15 +1139,21 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             tensor_list=all_partition_states,
             dp=dist.get_world_size(group=self.dp_process_group),
             max_elements_per_comm=max_elems_per_comm,
-            pg=self.dp_process_group)
+            pg=self.dp_process_group,
+        )
 
-        comm_partitions, dp_sub_partitions, element_intervals, sub_partition_size, num_comm_intervals = \
-            self.get_data_parallel_sub_partitions(
-                tensor=flat_merged_partitions,
-                max_elements_per_comm=max_elems_per_comm,
-                world_size=dist.get_world_size(group=self.dp_process_group),
-                dp_process_group=self.dp_process_group
-            )
+        (
+            comm_partitions,
+            dp_sub_partitions,
+            element_intervals,
+            sub_partition_size,
+            num_comm_intervals,
+        ) = self.get_data_parallel_sub_partitions(
+            tensor=flat_merged_partitions,
+            max_elements_per_comm=max_elems_per_comm,
+            world_size=dist.get_world_size(group=self.dp_process_group),
+            dp_process_group=self.dp_process_group,
+        )
 
         partition_id = dist.get_rank(group=self.dp_process_group)
         return [sub_partition for sub_partition in dp_sub_partitions[partition_id]]
@@ -1053,7 +1162,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
     # 1) Merging state values across the previous partitioning.
     # 2) Repartition state values for the new partitioning
     # 3) Return state corresponding to local partition
-    def _retrieve_group_optimizer_states(self, all_partition_states, max_elems_per_comm):
+    def _retrieve_group_optimizer_states(
+        self, all_partition_states, max_elems_per_comm
+    ):
         merged_optimizer_states = {}
         num_partitions = len(all_partition_states)
         num_comm_intervals = len(all_partition_states[0])
@@ -1071,9 +1182,8 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         group_optimizer_states = {}
         for key, value in merged_optimizer_states.items():
             group_optimizer_states[key] = self._partition_base_optimizer_state(
-                key,
-                value,
-                max_elems_per_comm)
+                key, value, max_elems_per_comm
+            )
 
         return group_optimizer_states
 
@@ -1085,16 +1195,16 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         base_optimizer_group_states = []
         for group_idx in range(len(self.optimizer.param_groups)):
             all_partition_group_states = [
-                sd['base_optimizer_state'][group_idx] for sd in state_dict_list
+                sd["base_optimizer_state"][group_idx] for sd in state_dict_list
             ]
             max_elems_per_comm = self.max_elems_per_comm[group_idx]
             group_optimizer_states = self._retrieve_group_optimizer_states(
-                all_partition_group_states,
-                max_elems_per_comm)
+                all_partition_group_states, max_elems_per_comm
+            )
             base_optimizer_group_states.append(group_optimizer_states)
 
         for group_idx, group in enumerate(self.optimizer.param_groups):
-            for param_idx, param in enumerate(group['params']):
+            for param_idx, param in enumerate(group["params"]):
                 for key, saved in base_optimizer_group_states[group_idx].items():
                     if torch.is_tensor(self.optimizer.state[param][key]):
                         current = self.optimizer.state[param][key]
@@ -1105,8 +1215,13 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
     # Restore base optimizer fp32 weights from ZeRO fp16 weights
     def _restore_from_fp16_weights(self):
         partition_id = dist.get_rank(group=self.dp_process_group)
-        for fp16_partitions, fp32_partitions in zip(self.parallel_sub_partitioned_fp16_groups, self.local_sub_partitions_of_fp32_groups):
-            for fp16_sub_partition, fp32_sub_partition in zip(fp16_partitions[partition_id], fp32_partitions):
+        for fp16_partitions, fp32_partitions in zip(
+            self.parallel_sub_partitioned_fp16_groups,
+            self.local_sub_partitions_of_fp32_groups,
+        ):
+            for fp16_sub_partition, fp32_sub_partition in zip(
+                fp16_partitions[partition_id], fp32_partitions
+            ):
                 fp32_sub_partition.data.copy_(fp16_sub_partition.data)
 
     # Refresh the fp32 master params from the fp16 copies.
@@ -1116,20 +1231,22 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
     def _rigid_load_state_dict(self, state_dict, load_optimizer_states=True):
 
         # I think it should actually be ok to reload the optimizer before the model.
-        self.loss_scaler = state_dict['loss_scaler']
-        self.dynamic_loss_scale = state_dict['dynamic_loss_scale']
-        self.overflow = state_dict['overflow']
+        self.loss_scaler = state_dict["loss_scaler"]
+        self.dynamic_loss_scale = state_dict["dynamic_loss_scale"]
+        self.overflow = state_dict["overflow"]
         if load_optimizer_states:
-            self.optimizer.load_state_dict(state_dict['base_optimizer_state'])
+            self.optimizer.load_state_dict(state_dict["base_optimizer_state"])
 
-        for curr_group, saved_group in zip(self.local_sub_partitions_of_fp32_groups, state_dict['local_sub_partitions_of_fp32_groups']):
+        for curr_group, saved_group in zip(
+            self.local_sub_partitions_of_fp32_groups,
+            state_dict["local_sub_partitions_of_fp32_groups"],
+        ):
             for curr_param, saved_param in zip(curr_group, saved_group):
                 curr_param.data.copy_(saved_param.data)
 
-    def _elastic_load_state_dict(self,
-                                 state_dict_list,
-                                 load_optimizer_states=True,
-                                 load_from_fp32_weights=False):
+    def _elastic_load_state_dict(
+        self, state_dict_list, load_optimizer_states=True, load_from_fp32_weights=False
+    ):
         """
         Loads a state_dict created by an earlier call to state_dict().
         If ``fp16_optimizer_instance`` was constructed from some ``init_optimizer``,
@@ -1146,9 +1263,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             optimizer.load_state_dict(checkpoint['optimizer'])
         """
         # I think it should actually be ok to reload the optimizer before the model.
-        self.loss_scaler = state_dict_list[0]['loss_scaler']
-        self.dynamic_loss_scale = state_dict_list[0]['dynamic_loss_scale']
-        self.overflow = state_dict_list[0]['overflow']
+        self.loss_scaler = state_dict_list[0]["loss_scaler"]
+        self.dynamic_loss_scale = state_dict_list[0]["dynamic_loss_scale"]
+        self.overflow = state_dict_list[0]["overflow"]
 
         if load_optimizer_states:
             self._restore_base_optimizer_state(state_dict_list)
@@ -1158,10 +1275,9 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
         else:
             self._restore_from_fp16_weights()
 
-    def load_state_dict(self,
-                        state_dict_list,
-                        load_optimizer_states=True,
-                        load_from_fp32_weights=False):
+    def load_state_dict(
+        self, state_dict_list, load_optimizer_states=True, load_from_fp32_weights=False
+    ):
         """
         Loads a state_dict created by an earlier call to state_dict().
         If ``fp16_optimizer_instance`` was constructed from some ``init_optimizer``,
@@ -1178,25 +1294,28 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
             optimizer.load_state_dict(checkpoint['optimizer'])
         """
         if self.elastic_checkpoint:
-            self._elastic_load_state_dict(state_dict_list,
-                                          load_optimizer_states,
-                                          load_from_fp32_weights)
+            self._elastic_load_state_dict(
+                state_dict_list, load_optimizer_states, load_from_fp32_weights
+            )
         else:
             self._rigid_load_state_dict(
                 state_dict_list[dist.get_rank(group=self.dp_process_group)],
-                load_optimizer_states)
+                load_optimizer_states,
+            )
 
     def _dump_optimizer_state(self, message):
-        logger.info(f'{message}')
+        logger.info(f"{message}")
         for i, group in enumerate(self.optimizer.param_groups):
-            for j, param in enumerate(group['params']):
+            for j, param in enumerate(group["params"]):
                 for key, value in self.optimizer.state[param].items():
                     t_stats = [
                         value.min(),
                         value.max(),
                         (value.max() - value.min()),
-                        value.mean()
+                        value.mean(),
                     ]
                     stats = [float(t) for t in t_stats]
                     logger.info(
-                        f'group/param/key/min/max/delta/mean = {i}, {j}, {key}: {stats}')
+                        f"group/param/key/min/max/delta/mean = {i}, {j}, {key}: {stats}"
+                    )
+
