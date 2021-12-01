@@ -1730,8 +1730,9 @@ class DeepSpeedEngine(Module):
         # Save latest checkpoint tag
         dist.barrier()
         if save_latest:
-            with open(os.path.join(save_dir, 'latest'), 'w') as fd:
-                fd.write(tag)
+            if torch.distributed.get_rank() == 0:
+                with open(os.path.join(save_dir, 'latest'), 'w') as fd:
+                    fd.write(tag)
 
         if self.zero_optimization_partition_weights():
             self.optimizer.save_checkpoint_epilogue()
@@ -1813,7 +1814,8 @@ class DeepSpeedEngine(Module):
             param_shapes=self._get_param_shapes(),
         )
         torch.save(zero_sd, zero_checkpoint_name)
-        self._copy_recovery_script(save_path)
+        if torch.distributed.get_rank() == 0:
+            self._copy_recovery_script(save_path)
         logger.info('zero checkpoint saved {}'.format(zero_checkpoint_name))
 
     def _zero3_consolidated_fp16_state_dict(self):
