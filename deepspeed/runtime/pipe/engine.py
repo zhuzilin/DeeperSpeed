@@ -1058,6 +1058,8 @@ class PipelineEngine(DeepSpeedEngine):
             # attention mask
             if self.has_attention_mask:
                 recvd[-1] = recvd[-1].bool()
+            if not self.is_first_stage(): 
+                recvd[0] = recvd[0].to(self._config.precision)
 
             recvd = tuple(recvd)
 
