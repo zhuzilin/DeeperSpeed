@@ -803,7 +803,6 @@ class DeepSpeedEngine(Module):
     def _configure_zero_optimizer(self, optimizer):
         zero_stage = self.zero_optimization_stage()
         log_dist('Creating fp16 ZeRO stage {} optimizer'.format(zero_stage), ranks=[0])
-        assert not self.allreduce_always_fp32(), "ZeRO does not support 'fp32_allreduce': true"
         timers = self.timers if self.wall_clock_breakdown() else None
 
         if zero_stage == ZERO_OPTIMIZATION_OPTIMIZER_STATES:
@@ -819,6 +818,7 @@ class DeepSpeedEngine(Module):
                 dp_process_group=self.data_parallel_group,
                 elastic_checkpoint=self.zero_elastic_checkpoint(),
                 mpu=self.mpu,
+                fp32_allreduce=self._config.allreduce_always_fp32,
                 precision=self.precision())
         elif zero_stage == ZERO_OPTIMIZATION_GRADIENTS:
             optimizer = FP16_DeepSpeedZeroOptimizer(

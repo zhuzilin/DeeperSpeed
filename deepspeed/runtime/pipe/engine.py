@@ -667,7 +667,9 @@ class PipelineEngine(DeepSpeedEngine):
                 local_part=inputs[1],
                 group=self.grid.get_slice_parallel_group())
 
-            inputs = tuple([part_input.full(), inputs[2]])
+            part_input = part_input.full()
+            part_input = part_input.to(self._config.precision)
+            inputs = tuple([part_input, inputs[2]])
             inputs[0].requires_grad = True
             # skip mask
             # inputs[1].requires_grad = True
@@ -947,7 +949,7 @@ class PipelineEngine(DeepSpeedEngine):
         # messages (TODO)
         if self.has_attention_mask:
             outputs = list(outputs)
-            outputs[-1] = outputs[-1].half()
+            outputs[-1] = outputs[-1].to(self._config.precision)
             outputs = tuple(outputs)
 
         if self.first_output_send:
@@ -1058,6 +1060,10 @@ class PipelineEngine(DeepSpeedEngine):
             # attention mask
             if self.has_attention_mask:
                 recvd[-1] = recvd[-1].bool()
+            
+            if not self.is_first_stage(): #  and recvd[0].dtype == torch.float
+                if recvd[0].dtype != torch.long:
+                    recvd[0] = recvd[0].to(self._config.precision)
 
             recvd = tuple(recvd)
 
@@ -1159,8 +1165,7 @@ class PipelineEngine(DeepSpeedEngine):
             A tensor from torch.zeros() allocated on self.device.
         """
 
-        precision = self.precision() if self.precision() != torch.bfloat16 else torch.float32
-        return torch.zeros(shape, dtype=precision, device=self.device, **kwargs)
+        return torch.zeros(shape, dtype=self.precision(), device=self.device, **kwargs)
 
 
     def _allocate_buffer(self, shape, num_buffers=-1, **kwargs):

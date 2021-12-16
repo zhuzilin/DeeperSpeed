@@ -121,6 +121,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
                  clip_grad=0.0,
                  max_elements_per_comm=5e8,
                  elastic_checkpoint=True,
+                 fp32_allreduce=False,
                  precision=torch.half):
 
         # Load pre-built or JIT compile (un)flatten ops
@@ -130,10 +131,7 @@ class FP16_DeepSpeedZeroOptimizer_Stage1(object):
 
         # set precision
         self.precision = precision
-        if self.precision == torch.bfloat16:
-            self.fp32_allreduce = True
-        else:
-            self.fp32_allreduce = False
+        self.fp32_allreduce = fp32_allreduce
 
         if dp_process_group is not None and partition_size is not None:
             raise ValueError("Cannot specify both dp_process_group "
