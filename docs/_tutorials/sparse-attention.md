@@ -4,7 +4,7 @@ title: "DeepSpeed  Sparse Attention"
 
 In this tutorial we describe how to use DeepSpeed Sparse Attention (SA) and its building-block kernels. The easiest way to use SA is through DeepSpeed launcher. We will describe this through an example in [How to use sparse attention with DeepSpeed launcher](#how-to-use-sparse-attention-with-deepspeed-launcher) section. But before that, we introduce modules provided by DeepSpeed SA in the [next](#sparse-attention-modules) section.
 
-**Note:** Currently DeepSpeed Sparse Attention can be used only on NVIDIA V100 GPU using Torch >= 1.5 and Cuda 10.1 or 10.2.
+**Note:** Currently, DeepSpeed Sparse Attention can be used only on NVIDIA V100 or A100 GPUs using Torch >= 1.6 and CUDA 10.1, 10.2, 11.0, or 11.1.
 {: .notice--warning}
 
 ## Sparse attention modules
@@ -148,7 +148,7 @@ Please refer to the Docstrings for details of how to use each module separately.
 ## How to config sparsity structures
 Following we describe supported sparsity structures, their parameter set and the flexibility of adding arbitrary sparsity pattern on the self-attention layer. You can update DeepSpeed config file using any of the supported sparsity structures and set the parameters accordingly.
 
-* **SpasityConfig**:
+* **SparsityConfig**:
 This module, is the parent class for all sparsity structures and contains the shared features of all sparsity structures. It takes the following parameters:
   * `num_heads`: an integer determining number of attention heads of the layer.
   * `block`: an integer determining the block size. Current implementation of sparse self-attention is based on blocked sparse matrices. In which this parameter defines size of such square blocks; `Block X Block`.
@@ -164,7 +164,7 @@ This structure is based on [Generative Modeling with Sparse Transformers](https:
 
 ![Fixed sparsity structure](/assets/images/sa_fixed_sparsity_structure.png)
 
-* **BSLongformer** (BSLongformerSparistyConfig):
+* **BSLongformer** (BSLongformerSparsityConfig):
 This structure is an edited version of [Longformer: The Long-Document Transformer](https://arxiv.org/pdf/2004.05150.pdf), in which instead of single token-wise sparsity, we offer block of tokens sparsity. Parameters that define this patters are:
 	* `num_sliding_window_blocks`: an integer determining the number of blocks in sliding local attention window.
 	* `global_block_indices`: a list of integers determining which blocks are considered as global attention. Given indices, determine the blocks that all other token blocks attend to and they attend to all other token blocks. Notice that if `global_block_end_indices` parameter is set, this parameter is used as starting index of each global window.

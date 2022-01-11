@@ -1,14 +1,14 @@
 #Linear Module to use with ZeRO Stage 3 to allow for parameter memory release
 #after the module execution during forward
 #Instead of saving variables using save_for_backward, we save variable ids
-#Allowing us to retrive the variable without creating pointer to it
+#Allowing us to retrieve the variable without creating pointer to it
 #Which allows for underlying tensor to be garbage collected
 #When partitioned as needed by the Zero Stage 3 optimizer
 #TODO instead of patching Linear module, we could patch the ctx.save_for_backward
 #ctx.saved_tensors so that this approach works for all nn modules that are built upon
 #torch.nn.function. However the issue is that many modules uses C++ implementations
-#which does not have pytroch implementation. Eg torch.addmm which acts as a funcitonal
-#when implemeted outside of torch.autograd.Function
+#which does not have pytorch implementation. Eg torch.addmm which acts as a functional
+#when implemented outside of torch.autograd.Function
 
 import math
 
@@ -17,6 +17,7 @@ from torch import Tensor
 from torch.nn.parameter import Parameter
 from torch.nn import init
 from torch.nn.modules.module import Module
+from deepspeed.runtime.utils import noop_decorator
 
 tensor_map = {}
 
@@ -26,10 +27,19 @@ def print_rank_0(message, debug=False, force=False):
         print(message)
 
 
+try:
+    autocast_custom_fwd = torch.cuda.amp.custom_fwd
+    autocast_custom_bwd = torch.cuda.amp.custom_bwd
+except (ImportError, AttributeError) as exp:
+    autocast_custom_fwd = noop_decorator
+    autocast_custom_bwd = noop_decorator
+
+
 class LinearFunctionForZeroStage3(torch.autograd.Function):
 
     # Note that both forward and backward are @staticmethods
     @staticmethod
+    @autocast_custom_fwd
     # bias is an optional argument
     def forward(ctx, input, weight, bias=None):
         #print("In ZeRO Linear Function")
@@ -56,6 +66,7 @@ class LinearFunctionForZeroStage3(torch.autograd.Function):
 
     # This function has only a single output, so it gets only one gradient
     @staticmethod
+    @autocast_custom_bwd
     def backward(ctx, grad_output):
         # This is a pattern that is very convenient - at the top of backward
         # unpack saved_tensors and initialize all gradients w.r.t. inputs to

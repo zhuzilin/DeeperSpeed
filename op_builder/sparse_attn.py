@@ -1,7 +1,6 @@
 """
 Copyright 2020 The Microsoft DeepSpeed Team
 """
-import torch
 import warnings
 from .builder import OpBuilder
 
@@ -22,11 +21,17 @@ class SparseAttnBuilder(OpBuilder):
     def cxx_args(self):
         return ['-O2', '-fopenmp']
 
-    def is_compatible(self):
+    def is_compatible(self, verbose=True):
         # Check to see if llvm and cmake are installed since they are dependencies
         #required_commands = ['llvm-config|llvm-config-9', 'cmake']
         #command_status = list(map(self.command_exists, required_commands))
         #deps_compatible = all(command_status)
+
+        try:
+            import torch
+        except ImportError:
+            self.warning(f"unable to import torch, please install it first")
+            return False
 
         # torch-cpu will not have a cuda version
         if torch.version.cuda is None:
@@ -47,4 +52,4 @@ class SparseAttnBuilder(OpBuilder):
                 f'{self.NAME} requires a torch version >= 1.5 but detected {TORCH_MAJOR}.{TORCH_MINOR}'
             )
 
-        return super().is_compatible() and torch_compatible and cuda_compatible
+        return super().is_compatible(verbose) and torch_compatible and cuda_compatible

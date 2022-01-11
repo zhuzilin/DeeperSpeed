@@ -49,7 +49,7 @@ class SparsityConfig:
         """If all heads require same sparsity layout, it propagate first head layout to all heads
 
         Arguments:
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head
@@ -152,11 +152,11 @@ class FixedSparsityConfig(SparsityConfig):
         self.num_different_global_patterns = num_different_global_patterns
 
     def set_local_layout(self, h, layout):
-        """Sets local attantion layout used by the given head in the sparse attention.
+        """Sets local attention layout used by the given head in the sparse attention.
 
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which local layout is set
@@ -173,14 +173,14 @@ class FixedSparsityConfig(SparsityConfig):
         return layout
 
     def set_global_layout(self, h, layout):
-        """Sets global attantion layout used by the given head in the sparse attention.
+        """Sets global attention layout used by the given head in the sparse attention.
 
         Currently we set global blocks starting from the last block of a local window to the first one. That means if a local window consists of 4 blocks and global attention size is one block, we use block #4 in each local window as global. If we have different layout per head, then other heads will get #3, #2, and #1. And if we have more heads (and different layout has set) than num of global attentions, multiple head may have same global attentions.
         Note) if horizontal_global_attention is set, global blocks will be set both horizontally and vertically.
 
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which global layout is set
@@ -308,12 +308,12 @@ class VariableSparsityConfig(SparsityConfig):
         self.horizontal_global_attention = horizontal_global_attention
 
     def set_random_layout(self, h, layout):
-        """Sets random attantion layout used by the given head in the sparse attention.
+        """Sets random attention layout used by the given head in the sparse attention.
         Note) By default, it assumes there will be a unique random block layout for all heads; unless `different_layout_per_head` parameter is set in which each head can have a different random layout.
 
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which random layout is set
@@ -322,7 +322,7 @@ class VariableSparsityConfig(SparsityConfig):
         num_blocks = layout.shape[1]
         if (num_blocks < self.num_random_blocks):
             raise ValueError(
-                f'Number of random blocks, {self.num_random_blocks}, must be smaller than overal number of blocks in a row, {num_blocks}!'
+                f'Number of random blocks, {self.num_random_blocks}, must be smaller than overall number of blocks in a row, {num_blocks}!'
             )
         for row in range(0, num_blocks):
             rnd_cols = random.sample(range(0, num_blocks), self.num_random_blocks)
@@ -330,10 +330,10 @@ class VariableSparsityConfig(SparsityConfig):
         return layout
 
     def set_local_layout(self, h, layout):
-        """Sets local attantion layout used by the given head in the sparse attention.
+        """Sets local attention layout used by the given head in the sparse attention.
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which local layout is set
@@ -363,11 +363,11 @@ class VariableSparsityConfig(SparsityConfig):
         return layout
 
     def set_global_layout(self, h, layout):
-        """Sets global attantion layout used by the given head in the sparse attention.
+        """Sets global attention layout used by the given head in the sparse attention.
 
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which global layout is set
@@ -376,7 +376,7 @@ class VariableSparsityConfig(SparsityConfig):
         num_blocks = layout.shape[1]
         if (self.global_block_end_indices is None):
             for idx in self.global_block_indices:
-                # if global block idx is in the range of the sequnce blocks
+                # if global block idx is in the range of the sequence blocks
                 if (idx < num_blocks):
                     #global rows
                     if (self.horizontal_global_attention):
@@ -387,7 +387,7 @@ class VariableSparsityConfig(SparsityConfig):
                     layout[h, first_row:, idx] = 1
         else:
             for _, (start_idx, end_idx) in enumerate(zip(self.global_block_indices, self.global_block_end_indices)):
-                # if global block idx is in the range of the sequnce blocks
+                # if global block idx is in the range of the sequence blocks
                 if (start_idx < num_blocks):
                     end_idx = min(end_idx, num_blocks)
                     #global rows
@@ -453,12 +453,12 @@ class BigBirdSparsityConfig(SparsityConfig):
         self.attention = attention
 
     def set_random_layout(self, h, layout):
-        """Sets random attantion layout used by the given head in the sparse attention.
+        """Sets random attention layout used by the given head in the sparse attention.
         Note) By default, it assumes there will be a unique random block layout for all heads; unless `different_layout_per_head` parameter is set in which each head can have a different random layout.
 
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which random layout is set
@@ -467,7 +467,7 @@ class BigBirdSparsityConfig(SparsityConfig):
         num_blocks = layout.shape[1]
         if (num_blocks < self.num_random_blocks):
             raise ValueError(
-                f'Number of random blocks, {self.num_random_blocks}, must be smaller than overal number of blocks in a row, {num_blocks}!'
+                f'Number of random blocks, {self.num_random_blocks}, must be smaller than overall number of blocks in a row, {num_blocks}!'
             )
 
         for row in range(0, num_blocks):
@@ -477,11 +477,11 @@ class BigBirdSparsityConfig(SparsityConfig):
         return layout
 
     def set_sliding_window_layout(self, h, layout):
-        """Sets sliding local attantion layout used by the given head in the sparse attention.
+        """Sets sliding local attention layout used by the given head in the sparse attention.
 
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which local sliding window layout is set
@@ -490,7 +490,7 @@ class BigBirdSparsityConfig(SparsityConfig):
         num_blocks = layout.shape[1]
         if (num_blocks < self.num_sliding_window_blocks):
             raise ValueError(
-                f'Number of sliding window blocks, {self.num_sliding_window_blocks}, must be smaller than overal number of blocks in a row, {num_blocks}!'
+                f'Number of sliding window blocks, {self.num_sliding_window_blocks}, must be smaller than overall number of blocks in a row, {num_blocks}!'
             )
 
         w = self.num_sliding_window_blocks // 2
@@ -501,11 +501,11 @@ class BigBirdSparsityConfig(SparsityConfig):
         return layout
 
     def set_global_layout_itc(self, h, layout):
-        """Sets global attantion layout used by the given head in the sparse attention.
+        """Sets global attention layout used by the given head in the sparse attention.
 
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which global layout is set
@@ -514,7 +514,7 @@ class BigBirdSparsityConfig(SparsityConfig):
         num_blocks = layout.shape[1]
         if (num_blocks < self.num_global_blocks):
             raise ValueError(
-                f'Number of global blocks, {self.num_global_blocks}, must be smaller than overal number of blocks in a row, {num_blocks}!'
+                f'Number of global blocks, {self.num_global_blocks}, must be smaller than overall number of blocks in a row, {num_blocks}!'
             )
 
         #global rows
@@ -598,11 +598,11 @@ class BSLongformerSparsityConfig(SparsityConfig):
         self.attention = attention
 
     def set_sliding_window_layout(self, h, layout):
-        """Sets sliding local attantion layout used by the given head in the sparse attention.
+        """Sets sliding local attention layout used by the given head in the sparse attention.
 
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which local sliding window layout is set
@@ -611,7 +611,7 @@ class BSLongformerSparsityConfig(SparsityConfig):
         num_blocks = layout.shape[1]
         if (num_blocks < self.num_sliding_window_blocks):
             raise ValueError(
-                f'Number of sliding window blocks, {self.num_sliding_window_blocks}, must be smaller than overal number of blocks in a row, {num_blocks}!'
+                f'Number of sliding window blocks, {self.num_sliding_window_blocks}, must be smaller than overall number of blocks in a row, {num_blocks}!'
             )
 
         w = self.num_sliding_window_blocks // 2
@@ -622,11 +622,11 @@ class BSLongformerSparsityConfig(SparsityConfig):
         return layout
 
     def set_global_layout(self, h, layout):
-        """Sets global attantion layout used by the given head in the sparse attention.
+        """Sets global attention layout used by the given head in the sparse attention.
 
         Arguments:
              h: required: an integer determining head index
-             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completly set at this step
+             layout: required: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head; may not be completely set at this step
 
         Return:
              layout: a tensor of dimension (num_heads, num_blocks, num_blocks) containing sparsity layout of all head in which global layout is set
@@ -635,7 +635,7 @@ class BSLongformerSparsityConfig(SparsityConfig):
         num_blocks = layout.shape[1]
         if (self.global_block_end_indices is None):
             for idx in self.global_block_indices:
-                # if global block idx is in the range of the sequnce blocks
+                # if global block idx is in the range of the sequence blocks
                 if (idx < num_blocks):
                     #global rows
                     layout[h, idx, :] = 1
@@ -644,7 +644,7 @@ class BSLongformerSparsityConfig(SparsityConfig):
                     layout[h, :, idx] = 1
         else:
             for _, (start_idx, end_idx) in enumerate(zip(self.global_block_indices, self.global_block_end_indices)):
-                # if global block idx is in the range of the sequnce blocks
+                # if global block idx is in the range of the sequence blocks
                 if (start_idx < num_blocks):
                     end_idx = min(end_idx, num_blocks)
                     #global rows

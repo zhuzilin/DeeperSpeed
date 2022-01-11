@@ -7,8 +7,7 @@ from torch.nn.functional import *
 import torch
 from torch import distributed as dist
 from collections import namedtuple
-from deepspeed.ops.sparse_attention import MatMul, Softmax, SparsityConfig
-import sys
+from deepspeed.ops.sparse_attention import SparsityConfig
 
 
 class SparseSelfAttention(nn.Module):
@@ -19,16 +18,15 @@ class SparseSelfAttention(nn.Module):
     For usage example please see, TODO DeepSpeed Sparse Transformer Tutorial.
     """
     def __init__(
-        self,
-        # SparsityConfig parameters needs to be set accordingly
-        sparsity_config=SparsityConfig(num_heads=4),
-        key_padding_mask_mode='add',
-        attn_mask_mode='mul',
-        max_seq_length=2048,
-        mpu=None):
+            self,
+            # SparsityConfig parameters needs to be set accordingly
+            sparsity_config=SparsityConfig(num_heads=4),
+            key_padding_mask_mode='add',
+            attn_mask_mode='mul',
+            max_seq_length=2048):
         """Initialize the sparse self attention layer.
         Arguments:
-            sparsity_config: optional: this parameter determins sparsity pattern configuration; it is based on SparsityConfig class.
+            sparsity_config: optional: this parameter determines sparsity pattern configuration; it is based on SparsityConfig class.
             key_padding_mask_mode: optional: a string determining if key padding mask needs to be added, `add`, or be multiplied, `mul`.
             attn_mask_mode: optional: a string determining if attention mask needs to be added, `add`, or be multiplied, `mul`.
             max_seq_length: optional: the maximum sequence length this sparse attention module will be applied to; it controls the size of the master_layout.
@@ -46,7 +44,6 @@ class SparseSelfAttention(nn.Module):
         # mask modes
         self.key_padding_mask_mode = key_padding_mask_mode
         self.attn_mask_mode = attn_mask_mode
-        self.mpu = mpu
 
     ops = dict()
 
@@ -54,14 +51,6 @@ class SparseSelfAttention(nn.Module):
         # if layout is never synchronized across GPUs, broadcast the layout from global rank 0
         if self._need_layout_synchronization and dist.is_initialized():
             dist.broadcast(self.master_layout, src=0)
-            #             if self.mpu is not None:
-            #                 data_parallel_group = self.mpu.get_data_parallel_group()
-            #                 src_rank = self.mpu.get_data_parallel_src_rank()
-            #             else:
-            #                 src_rank = 0
-            #                 data_parallel_group = None
-            #             dist.broadcast(self.master_layout, src=src_rank,
-            #                            group=data_parallel_group)
             self._need_layout_synchronization = False
 
         if (L % self.sparsity_config.block != 0):
@@ -74,7 +63,8 @@ class SparseSelfAttention(nn.Module):
 
     # add to cache
     def get_ops(self, H, L):
-        import sys
+        from deepspeed.ops.sparse_attention.matmul import MatMul
+        from deepspeed.ops.sparse_attention.softmax import Softmax
         if L not in SparseSelfAttention.ops:
             sparsity_layout = self.get_layout(L)
             sparse_dot_sdd_nt = MatMul(sparsity_layout,
@@ -132,8 +122,9 @@ class SparseSelfAttention(nn.Module):
             attn_mask_mode: optional: a boolean determining if attn_mask needs to be added or multiplied
 
         Return:
-             attn_output: a dense tensor containing attnetion context
+             attn_output: a dense tensor containing attention context
         """
+        assert query.dtype == torch.half, "sparse attention only supports training in fp16 currently, please file a github issue if you need fp32 support"
         bsz, num_heads, tgt_len, head_dim = query.size()
 
         # transpose back key if it is already transposed

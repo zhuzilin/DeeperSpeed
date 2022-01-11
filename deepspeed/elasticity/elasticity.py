@@ -6,6 +6,8 @@ import re
 import json
 import numpy as np
 
+from packaging import version as pkg_version
+
 from .config import ElasticityConfig, ElasticityConfigError, ElasticityError, \
     ElasticityIncompatibleWorldSize
 from .constants import ELASTICITY, ENABLED, ENABLED_DEFAULT, LATEST_ELASTICITY_VERSION, \
@@ -60,17 +62,16 @@ HCN_LIST = [
 
 def get_candidate_batch_sizes(base_list, max_acceptable_batch_size):
     candidate_batch_size = []
-
-    #brute force is fine here. We are working with very small lists
     for base in base_list:
-        batch_size = base
-        for hcn in HCN_LIST:
-            new_batch_size = base * hcn
-            if new_batch_size > max_acceptable_batch_size:
-                break
-            batch_size = new_batch_size
-        candidate_batch_size.append(batch_size)
-    return list(set(candidate_batch_size))
+        if base >= max_acceptable_batch_size:
+            candidate_batch_size.append(base)
+        else:
+            value = max_acceptable_batch_size // base
+            index = np.argmax(np.asarray(HCN_LIST) > value)
+            candidate_batch_size.append(HCN_LIST[index - 1] * base)
+    candidate_batch_size = list(set(candidate_batch_size))
+    logger.info(f"Candidate batch size: {candidate_batch_size}")
+    return candidate_batch_size
 
 
 def get_valid_gpus(batch_size, micro_batches, min_valid_gpus, max_valid_gpus):
@@ -82,12 +83,17 @@ def get_valid_gpus(batch_size, micro_batches, min_valid_gpus, max_valid_gpus):
             if max_gpus >= min_valid_gpus and max_gpus <= max_valid_gpus:
                 valid_gpus.append(max_gpus)
 
+            # find all factors less than max_gpus / 2
             for i in range(1, max_gpus // 2 + 1):
+                if i > max_valid_gpus:
+                    break
+                if i < min_valid_gpus:
+                    continue
                 if max_gpus % i == 0:
-                    if i >= min_valid_gpus and i <= max_valid_gpus:
-                        valid_gpus.append(i)
+                    valid_gpus.append(i)
     valid_gpus = set(valid_gpus)
     valid_gpus = sorted(list(valid_gpus))
+    logger.info(f"Valid GPUs: {valid_gpus}")
     return valid_gpus
 
 
@@ -141,16 +147,12 @@ def _get_compatible_gpus_v01(micro_batches,
         final_batch_size
         valid_gpus
     '''
+    min_gpus = min_gpus or 1
+    max_gpus = max_gpus or max_acceptable_batch_size // min(micro_batches)
 
-    if min_gpus is None:
-        min_gpus = int(1)
-
-    if max_gpus is None:
-        max_gpus = int(max_acceptable_batch_size / min(micro_batches))
-
-    assert all(mb <= max_acceptable_batch_size for mb in micro_batches ), \
-            f"All micro batches must be less than \
-            or equal to max_acceptable_batch_size: {max_acceptable_batch_size}"
+    if not all(mb <= max_acceptable_batch_size for mb in micro_batches):
+        raise ValueError(f"All micro batches must be less than \
+            or equal to max_acceptable_batch_size: {max_acceptable_batch_size}")
 
     lcm = np.lcm.reduce(micro_batches)
 
@@ -171,29 +173,13 @@ def _get_compatible_gpus_v01(micro_batches,
     return final_batch_size, valid_gpus
 
 
-def _parse_version(version_str):
-    '''Parse a version string and extract the major and minor versions (and possibly patch version).'''
-    matched = re.search('^(\d+)\.(\d+)\.(\d+)', version_str)
-    if matched:
-        return int(matched.group(1)), int(matched.group(2)), int(matched.group(3))
-    else:
-        matched = re.search('^(\d+)\.(\d+)', version_str)
-        assert matched != None, "Unable to parse version number, expecting" \
-            f"major.minor[.patch] format but received {version_str}"
-        return int(matched.group(1)), int(matched.group(2)), 0
-
-
 def _compatible_ds_version_check(target_deepspeed_version: str):
-    min_major, min_minor, min_patch = _parse_version(MINIMUM_DEEPSPEED_VERSION)
-    trg_major, trg_minor, trg_patch = _parse_version(target_deepspeed_version)
+    min_version = pkg_version.parse(MINIMUM_DEEPSPEED_VERSION)
+    target_version = pkg_version.parse(target_deepspeed_version)
 
     err_str = f"Target deepspeed version of {target_deepspeed_version} is not compatible " \
         f"with minimum version {MINIMUM_DEEPSPEED_VERSION} supporting elasticity."
-    if trg_major < min_major:
-        raise ElasticityError(err_str)
-    if trg_minor < min_minor:
-        raise ElasticityError(err_str)
-    if trg_patch < min_patch:
+    if target_version < min_version:
         raise ElasticityError(err_str)
     return True
 

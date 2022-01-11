@@ -2,7 +2,6 @@
 Copyright (c) Microsoft Corporation
 Licensed under the MIT license.
 """
-import torch
 
 #############################################
 # Routes
@@ -109,6 +108,22 @@ SPARSE_GRADIENTS = "sparse_gradients"
 SPARSE_GRADIENTS_DEFAULT = False
 
 #########################################
+# BFLOAT16 support
+#########################################
+# BFLOAT16 feature. By default, this feature is not enabled.
+# Users can configure in ds_config.json as below example:
+BFLOAT16_FORMAT = '''
+BFLOAT16 parameters should be of the format:
+"bfloat16": {
+  "enabled": true
+}
+'''
+BFLOAT16 = "bfloat16"
+
+BFLOAT16_ENABLED = "enabled"
+BFLOAT16_ENABLED_DEFAULT = False
+
+#########################################
 # FP16 support
 #########################################
 # FP16 feature. By default, this feature is not enabled.
@@ -129,18 +144,6 @@ FP16 = "fp16"
 FP16_ENABLED = "enabled"
 FP16_ENABLED_DEFAULT = False
 
-FP16_TYPE = "type"
-FP16_TYPE_DEFAULT = "fp16"
-PRECISION_TYPES = {
-    "fp32": torch.float32,
-    "float32": torch.float32,
-    "float": torch.float32,
-    "fp16": torch.half,
-    "float16": torch.half,
-    "half": torch.half,
-    "bfloat16": torch.bfloat16
-}
-
 # FP16 loss scale, zero means using dynamic scaling
 FP16_LOSS_SCALE = "loss_scale"
 FP16_LOSS_SCALE_DEFAULT = 0
@@ -160,6 +163,10 @@ FP16_HYSTERESIS_DEFAULT = 2
 # FP16 min loss scale
 FP16_MIN_LOSS_SCALE = "min_loss_scale"
 FP16_MIN_LOSS_SCALE_DEFAULT = 1
+
+# FP16 master and grads
+FP16_MASTER_WEIGHTS_AND_GRADS = "fp16_master_weights_and_grads"
+FP16_MASTER_WEIGHTS_AND_GRADS_DEFAULT = False
 
 #########################################
 # Apex AMP support
@@ -192,17 +199,17 @@ GRADIENT_CLIPPING = 'gradient_clipping'
 GRADIENT_CLIPPING_DEFAULT = 0.
 
 #########################################
-# FP32 AllReduce
+# Communication data type
 #########################################
-# FP32 All reduce. By default, this feature is not enabled.
+# Supported types: ['none', 'fp16', 'fp32']
+# By default, this feature is not enabled ('none' value)
 # Users can configure in ds_config.json as below example:
-FP32_ALLREDUCE_FORMAT = '''
-FP32 Allreduce should be enabled as:
-"fp32_allreduce": true
+COMMUNICATION_DATA_TYPE_FORMAT = '''
+Communication data type should be set as:
+"communication_data_type": "fp32"
 '''
-FP32_ALLREDUCE = "fp32_allreduce"
-FP32_ALLREDUCE_DEFAULT = False
-FP32_ALLREDUCE_DEFAULT_BF16 = True  # if dtype is bf16 - default to fp32 communication
+COMMUNICATION_DATA_TYPE = "communication_data_type"
+COMMUNICATION_DATA_TYPE_DEFAULT = None
 
 #########################################
 # Scale/predivide gradients before allreduce
@@ -302,6 +309,48 @@ TENSORBOARD_JOB_NAME = "job_name"
 TENSORBOARD_JOB_NAME_DEFAULT = "DeepSpeedJobName"
 
 #########################################
+# Eigenvalue
+#########################################
+# Eigenvalue computation. By default, this feature is not enabled.
+# Users can configure in ds_config.json as below example:
+EIGENVALUE_FORMAT = '''
+Tensorboard can be specified as:
+"eigenvalue": {
+  "enabled": true,
+  "verbose": true,
+  "max_iter": 100,
+  "tol": 1e-2,
+  "stability": 1e-6
+}
+'''
+EIGENVALUE = "eigenvalue"
+
+# Tensorboard enable signal
+EIGENVALUE_ENABLED = "enabled"
+EIGENVALUE_ENABLED_DEFAULT = False
+
+EIGENVALUE_VERBOSE = "verbose"
+EIGENVALUE_VERBOSE_DEFAULT = False
+
+EIGENVALUE_MAX_ITER = "max_iter"
+EIGENVALUE_MAX_ITER_DEFAULT = 100
+
+EIGENVALUE_TOL = "tol"
+EIGENVALUE_TOL_DEFAULT = 1e-2
+
+EIGENVALUE_STABILITY = "stability"
+EIGENVALUE_STABILITY_DEFAULT = 1e-6
+
+EIGENVALUE_GAS_BOUNDARY_RESOLUTION = "gas_boundary_resolution"
+EIGENVALUE_GAS_BOUNDARY_RESOLUTION_DEFAULT = 1
+
+EIGENVALUE_LAYER_NAME = "layer_name"
+EIGENVALUE_LAYER_NAME_DEFAULT = "bert.encoder.layer"
+
+EIGENVALUE_LAYER_NUM = "layer_num"
+EIGENVALUE_LAYER_NUM_DEFAULT = 0
+
+#########################################
 # Progressive Layer Drop (PLD)
 #########################################
 PROGRESSIVE_LAYER_DROP = "progressive_layer_drop"
@@ -315,6 +364,14 @@ PLD_THETA_DEFAULT = 1.0
 
 PLD_GAMMA = "gamma"
 PLD_GAMMA_DEFAULT = 0.001
+
+#########################################
+# Curriculum Learning
+#########################################
+CURRICULUM_LEARNING = "curriculum_learning"
+
+CURRICULUM_ENABLED = "enabled"
+CURRICULUM_ENABLED_DEFAULT = False
 
 
 #########################################
@@ -338,3 +395,53 @@ CHECKPOINT_TAG_VALIDATION_MODES = [
     ValidationMode.IGNORE,
     ValidationMode.FAIL
 ]
+
+#########################################
+# Quantization
+#########################################
+QUANTIZE_TRAINING = "quantize_training"
+QUANTIZE_BITS = "quantize_bits"
+START_BITS = "start_bits"
+TARGET_BITS = "target_bits"
+QUANTIZER_KERNEL = "quantizer_kernel"
+QUANTIZE_SCHEDULE = "quantize_schedule"
+QUANTIZE_PERIOD = "quantize_period"
+SCHEDULE_OFFSET = "schedule_offset"
+QUANTIZE_GROUPS = "quantize_groups"
+FP16_MIXED_QUANTIZE = "fp16_mixed_quantize"
+QUANTIZE_CHANGE_RATIO = "quantize_change_ratio"
+FP16_MIXED_QUANTIZE_ENABLED = "enabled"
+QUANTIZE_VERBOSE = "quantize_verbose"
+QUANTIZE_ALGO = "quantize_algo"
+QUANTIZE_TYPE = "q_type"
+QUANTIZE_SYMMETRIC = "symmetric"
+QUANTIZE_ASYMMETRIC = "asymmetric"
+STOCHASTIC_ROUNDING = "stochastic"
+NEAREST_ROUNDING = "nearest"
+QUANTIZE_ROUNDING = "rounding"
+QUANTIZE_TRAINING_ENABLED = "enabled"
+QUANTIZE_TRAINING_ENABLED_DEFAULT = False
+QUANTIZE_TRAINING_DEFAULT = False
+QUANTIZE_START_BITS_DEFAULT = 16
+QUANTIZE_TARGET_BITS_DEFAULT = 8
+QUANTIZER_KERNEL_DEFAULT = False
+QUANTIZE_PERIOD_DEFAULT = 1000
+QUANTIZE_OFFSET_DEFAULT = 1000
+QUANTIZE_GROUPS_DEFAULT = 1
+QUANTIZE_TYPE_DEFAULT = 0  #symmetric
+QUANTIZE_ROUNDING_DEFAULT = 0  #nearest
+FP16_MIXED_QUANTIZE_ENABLED_DEFAULT = False
+QUANTIZE_CHANGE_RATIO_DEFAULT = 0.001
+QUANTIZE_VERBOSE_DEFAULT = False
+
+#########################################
+# Drop the last incomplete Batch
+# #########################################
+# dataloader_drop_last. By default, this feature is not enabled.
+# Users can configure in ds_config.json as below example:
+DATALOADER_DROP_LAST_FORMAT = '''
+The last incomplete batch can be dropped by setting:
+"dataloader_drop_last": True
+'''
+DATALOADER_DROP_LAST = "dataloader_drop_last"
+DATALOADER_DROP_LAST_DEFAULT = False

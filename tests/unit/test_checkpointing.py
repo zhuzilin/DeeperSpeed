@@ -3,18 +3,19 @@ import torch
 import torch.distributed as dist
 
 import deepspeed
-from deepspeed.runtime.zero.stage2 import FP16_DeepSpeedZeroOptimizer
-from deepspeed.runtime.zero.stage1 import FP16_DeepSpeedZeroOptimizer_Stage1
-
+from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
+from deepspeed.utils import groups
 from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer
 from deepspeed.runtime.fp16.unfused_optimizer import FP16_UnfusedOptimizer
 
 from deepspeed.runtime.pipe.topology import *
+
 PipeTopo = PipeDataParallelTopology
 
 from deepspeed.ops.op_builder import FusedLambBuilder, CPUAdamBuilder
 
-from deepspeed.runtime.zero.stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
+from deepspeed.runtime.zero.stage3 import DeepSpeedZeroOptimizer_Stage3
+from util import required_torch_version
 
 import argparse
 import pytest
@@ -29,37 +30,45 @@ def compare_deepspeed_states(saved_model, loaded_model):
     # These are compared in more depth in other places
     assert hasattr(loaded_model, 'module')
 
-    assert saved_model.csr_tensor_module_names == loaded_model.csr_tensor_module_names
+    assert saved_model.sparse_tensor_module_names == loaded_model.sparse_tensor_module_names
     assert saved_model.skipped_steps == loaded_model.skipped_steps
     assert saved_model.global_steps == loaded_model.global_steps
 
 
-def compare_model_states(saved_model, loaded_model, compare_optimizer=True):
-    compare_deepspeed_states(saved_model, loaded_model)
+def compare_model_states(saved_model,
+                         loaded_model,
+                         compare_optimizer=True,
+                         load_module_only=False):
+    if not load_module_only:
+        compare_deepspeed_states(saved_model, loaded_model)
 
-    for p0, p1 in zip(saved_model.module.parameters(), loaded_model.module.parameters()):
+    for p0, p1 in zip(saved_model.module.named_parameters(), loaded_model.module.named_parameters()):
+        np0, p0 = p0
+        np1, p1 = p1
+        if 'deepspeed_moe.gate.wg' in np0:
+            # these params are converted to float at runtime, cast to half for comparison
+            p1 = p1.half()
+            p0 = p0.half()
         assert id(p0) != id(p1), f'Comparing fp16 model state tensor against itself : {id(p0)} <====> {id(p1)}'
-        assert torch.allclose(p0, p1, atol=1e-07), f"FP16 model state {p0} is not equal to {p1}"
+        try:
+            assert torch.allclose(p0, p1, atol=1e-07), f"FP16 model state {p0} is not equal to {p1}, names:{np0}, {np1}"
+        except RuntimeError as err:
+            print(f"FP16 model state {p0} is not equal to {p1}, names:{np0}, {np1}")
+            raise err
 
     if not compare_optimizer:
         return
 
-    if FP16_DeepSpeedZeroOptimizer_Stage3 is not None and isinstance(
+    if DeepSpeedZeroOptimizer_Stage3 is not None and isinstance(
             saved_model.optimizer,
-            FP16_DeepSpeedZeroOptimizer_Stage3):
+            DeepSpeedZeroOptimizer_Stage3):
         for p0, p1 in zip(saved_model.optimizer.fp32_partitioned_groups_flat, loaded_model.optimizer.fp32_partitioned_groups_flat):
             assert torch.allclose(p0, p1, atol=1e-07), f"Fp32 model states {p0} is not equal to {p1}"
 
-    elif isinstance(saved_model.optimizer, FP16_DeepSpeedZeroOptimizer):
+    elif isinstance(saved_model.optimizer, DeepSpeedZeroOptimizer):
         for p0, p1 in zip(saved_model.optimizer.single_partition_of_fp32_groups, loaded_model.optimizer.single_partition_of_fp32_groups):
             assert id(p0) != id(p1), f'Comparing fp32 model state tensor against itself: {id(p0)} <====> {id(p1)}'
             assert torch.allclose(p0, p1, atol=1e-07), f"Fp32 model states {p0} is not equal to {p1}"
-
-    elif isinstance(saved_model.optimizer, FP16_DeepSpeedZeroOptimizer_Stage1):
-        for partition0, partition1 in zip(saved_model.optimizer.local_sub_partitions_of_fp32_groups, loaded_model.optimizer.local_sub_partitions_of_fp32_groups):
-            for p0, p1 in zip(partition0, partition1):
-                assert id(p0) != id(p1), f'Comparing fp32 model state tensor against itself: {id(p0)} <====> {id(p1)}'
-                assert torch.allclose(p0, p1, atol=1e-07), f"Fp32 model states {p0} is not equal to {p1}"
 
     elif isinstance(saved_model.optimizer, FP16_Optimizer):
         for p0, p1 in zip(saved_model.optimizer.fp32_groups_flat, loaded_model.optimizer.fp32_groups_flat):
@@ -137,17 +146,26 @@ def checkpoint_correctness_verification(args,
                                         train_batch=False,
                                         base_optimizers=[None,
                                                          None],
-                                        empty_tag=False):
+                                        empty_tag=False,
+                                        seq_dataloader=False,
+                                        load_module_only=False):
     dtype = torch.half if fp16 else torch.float32
     ds_model = create_deepspeed_model(args=args,
                                       model=models[0],
                                       base_optimizer=base_optimizers[0])
 
-    data_loader = random_dataloader(model=ds_model,
-                                    total_samples=50,
-                                    hidden_dim=hidden_dim,
-                                    device=ds_model.device,
-                                    dtype=dtype)
+    if seq_dataloader:
+        data_loader = sequence_dataloader(model=ds_model,
+                                          total_samples=50,
+                                          hidden_dim=hidden_dim,
+                                          device=ds_model.device,
+                                          dtype=dtype)
+    else:
+        data_loader = random_dataloader(model=ds_model,
+                                        total_samples=50,
+                                        hidden_dim=hidden_dim,
+                                        device=ds_model.device,
+                                        dtype=dtype)
 
     if train_batch:
         ds_model.set_dataloader(data_loader)
@@ -169,13 +187,19 @@ def checkpoint_correctness_verification(args,
     loaded_model = create_deepspeed_model(args=args,
                                           model=models[1],
                                           base_optimizer=base_optimizers[1])
+    assert list(trained_model.parameters())[0].dtype == list(
+        loaded_model.parameters())[0].dtype
 
     loaded_model.load_checkpoint(save_folder,
                                  tag=save_tag,
                                  load_optimizer_states=load_optimizer_states,
-                                 load_lr_scheduler_states=load_lr_scheduler_states)
+                                 load_lr_scheduler_states=load_lr_scheduler_states,
+                                 load_module_only=load_module_only)
 
-    compare_model_states(trained_model, loaded_model)
+    compare_model_states(trained_model,
+                         loaded_model,
+                         compare_optimizer=load_optimizer_states,
+                         load_module_only=load_module_only)
 
     if load_optimizer_states:
         compare_optimizer_states(trained_model, loaded_model, hidden_dim, fp16)
@@ -413,8 +437,8 @@ def test_checkpoint_zero_no_optimizer(tmpdir,
                                            hidden_dim,
                                            load_optimizer_states):
         if zero_stage == 3:
-            global FP16_DeepSpeedZeroOptimizer_Stage3
-            from deepspeed.runtime.zero.stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
+            global DeepSpeedZeroOptimizer_Stage3
+            from deepspeed.runtime.zero.stage3 import DeepSpeedZeroOptimizer_Stage3
             with deepspeed.zero.Init():
                 models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
         else:
@@ -494,8 +518,8 @@ def test_checkpoint_lr_scheduler(tmpdir, zero_stage, use_cpu_offload, adam_optim
                                       load_optimizer_states,
                                       load_lr_scheduler_states):
         if zero_stage == 3:
-            global FP16_DeepSpeedZeroOptimizer_Stage3
-            from deepspeed.runtime.zero.stage3 import FP16_DeepSpeedZeroOptimizer_Stage3
+            global DeepSpeedZeroOptimizer_Stage3
+            from deepspeed.runtime.zero.stage3 import DeepSpeedZeroOptimizer_Stage3
             with deepspeed.zero.Init():
                 models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
         else:
@@ -681,21 +705,22 @@ def test_checkpoint_pipe_engine(zero_stage, tmpdir, stages=2):
     _test(tmpdir, num_stages=stages)
 
 
-@pytest.mark.parametrize("base_topo,test_topo",
-                         [
-                             (PipeTopo(num_pp=1,
-                                       num_dp=4),
-                              PipeTopo(num_pp=4,
-                                       num_dp=1)),
-                             (PipeTopo(num_pp=2,
-                                       num_dp=2),
-                              PipeTopo(num_pp=2,
-                                       num_dp=2)),
-                             (PipeTopo(num_pp=4,
-                                       num_dp=1),
-                              PipeTopo(num_pp=2,
-                                       num_dp=2)),
-                         ])
+@pytest.mark.parametrize(
+    "base_topo,test_topo",
+    [
+        #(PipeTopo(num_pp=1,
+        #          num_dp=4),
+        # PipeTopo(num_pp=4,
+        #          num_dp=1)),
+        #(PipeTopo(num_pp=2,
+        #          num_dp=2),
+        # PipeTopo(num_pp=2,
+        #          num_dp=2)),
+        #(PipeTopo(num_pp=4,
+        #          num_dp=1),
+        # PipeTopo(num_pp=2,
+        #          num_dp=2)),
+    ])
 def test_checkpoint_pipe_module(base_topo, test_topo, tmpdir):
     @distributed_test(world_size=4)
     def _test(base_topo, test_topo, save_folder):
@@ -892,3 +917,245 @@ def test_checkpoint_unknown_tag_validation(tmpdir):
                                                  model_parameters=model.parameters())
 
     _helper(args=args, model=model, hidden_dim=hidden_dim)
+
+
+@pytest.mark.parametrize("ep_size", [4])
+def test_checkpoint_moe(tmpdir, ep_size):
+    if not required_torch_version():
+        pytest.skip("DeepSpeed MoE tests need torch 1.8 or higher to run correctly")
+
+    config_dict = {
+        "train_batch_size": 8,
+        "steps_per_print": 1,
+        "fp16": {
+            "enabled": True
+        }
+    }
+    hidden_dim = 16
+    args = args_from_dict(tmpdir, config_dict)
+
+    @distributed_test(world_size=[4])
+    def _helper(args):
+        groups.initialize(ep_size=ep_size)
+        models = [SimpleMoEModel(hidden_dim=hidden_dim) for _ in range(2)]
+        optimizers = [torch.optim.AdamW(params=model.parameters()) for model in models]
+        checkpoint_correctness_verification(args,
+                                            models=models,
+                                            hidden_dim=hidden_dim,
+                                            tmpdir=tmpdir,
+                                            load_optimizer_states=True,
+                                            load_lr_scheduler_states=False,
+                                            fp16=config_dict["fp16"]["enabled"],
+                                            empty_tag=True,
+                                            base_optimizers=optimizers,
+                                            seq_dataloader=True)
+
+    _helper(args)
+
+
+@pytest.mark.parametrize("ep_size, load_optim_states",
+                         [(4,
+                           True),
+                          (4,
+                           False),
+                          (2,
+                           True),
+                          (2,
+                           False)])
+def test_checkpoint_moe_and_zero(tmpdir, ep_size, load_optim_states):
+    if not required_torch_version():
+        pytest.skip("DeepSpeed MoE tests need torch 1.8 or higher to run correctly")
+
+    config_dict = {
+        "train_batch_size": 8,
+        "steps_per_print": 1,
+        "optimizer": {
+            "type": 'Adam',
+            "params": {
+                "lr": 0.00015,
+                "betas": [0.8,
+                          0.999],
+                "eps": 1e-8,
+                "weight_decay": 3e-7
+            }
+        },
+        "fp16": {
+            "enabled": True,
+            "initial_scale_power": 8
+        },
+        "zero_optimization": {
+            "stage": 2,
+        }
+    }
+    hidden_dim = 16
+    args = args_from_dict(tmpdir, config_dict)
+
+    def create_moe_param_groups(model):
+        from deepspeed.moe.utils import is_moe_param
+
+        params_with_weight_decay = {'params': [], 'name': 'weight_decay_params'}
+        moe_params_with_weight_decay = {
+            'params': [],
+            'moe': True,
+            'name': 'weight_decay_moe_params'
+        }
+
+        for module_ in model.modules():
+            moe_params_with_weight_decay['params'].extend([
+                p for n,
+                p in list(module_._parameters.items())
+                if p is not None and is_moe_param(p)
+            ])
+            params_with_weight_decay['params'].extend([
+                p for n,
+                p in list(module_._parameters.items())
+                if p is not None and not is_moe_param(p)
+            ])
+
+        return params_with_weight_decay, moe_params_with_weight_decay
+
+    @distributed_test(world_size=[4])
+    def _helper(args):
+        groups.initialize(ep_size=ep_size)
+        models = [
+            SimpleMoEModel(hidden_dim=hidden_dim,
+                           num_experts=ep_size) for _ in range(2)
+        ]
+        params = [create_moe_param_groups(model) for model in models]
+        optimizers = [torch.optim.AdamW(params=param) for param in params]
+        checkpoint_correctness_verification(args,
+                                            models=models,
+                                            hidden_dim=hidden_dim,
+                                            tmpdir=tmpdir,
+                                            load_optimizer_states=load_optim_states,
+                                            load_lr_scheduler_states=False,
+                                            fp16=config_dict["fp16"]["enabled"],
+                                            empty_tag=True,
+                                            base_optimizers=optimizers,
+                                            seq_dataloader=True)
+
+    _helper(args)
+
+
+@pytest.mark.parametrize('zero_stage', [0, 1, 2, 3])
+def test_checkpoint_load_module_only(tmpdir, zero_stage):
+    config_dict = {
+        "train_batch_size": 2,
+        "optimizer": {
+            "type": 'Adam'
+        },
+        "fp16": {
+            "enabled": True,
+            "initial_scale_power": 8
+        },
+        "zero_optimization": {
+            "stage": zero_stage,
+        }
+    }
+    args = args_from_dict(tmpdir, config_dict)
+    hidden_dim = 10
+
+    @distributed_test(world_size=[2])
+    def _go(args, zero_stage, hidden_dim):
+        if zero_stage == 3:
+            with deepspeed.zero.Init():
+                models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
+        else:
+            models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
+
+        checkpoint_correctness_verification(args,
+                                            models,
+                                            hidden_dim,
+                                            tmpdir,
+                                            load_module_only=True)
+
+    _go(args, zero_stage, hidden_dim)
+
+
+@pytest.mark.parametrize(["to_save_model_has_embedding",
+                          "to_save_model_sparse"],
+                         [
+                             [False,
+                              False],
+                             [True,
+                              False],
+                             [True,
+                              True],
+                         ])
+@pytest.mark.parametrize(["destination_has_embedding",
+                          "destination_sparse"],
+                         [
+                             [False,
+                              False],
+                             [True,
+                              False],
+                             [True,
+                              True],
+                         ])
+def test_non_strict_load_sparse(tmpdir,
+                                to_save_model_has_embedding,
+                                to_save_model_sparse,
+                                destination_has_embedding,
+                                destination_sparse):
+    config_dict = {"train_batch_size": 2}
+
+    class ModelNoEmbedding(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(3, 1)
+
+        def forward(self, x):
+            return self.linear(x)
+
+    class ModelEmbedding(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.emb = torch.nn.Embedding(10, 3)
+            self.linear = torch.nn.Linear(3, 1)
+
+        def forward(self, x, offsets):
+            return self.linear(self.emb(x, offsets))
+
+    @distributed_test(world_size=[2])
+    def _test(model_to_save, model_destination):
+        engine_to_save, _, _, _ = deepspeed.initialize(
+            model=model_to_save, config={"train_batch_size": 2, "sparse_gradients": to_save_model_sparse}
+        )
+        engine_destination, _, _, _ = deepspeed.initialize(
+            model=model_destination, config={"train_batch_size": 2, "sparse_gradients": destination_sparse}
+        )
+
+        save_folder = os.path.join(tmpdir, 'saved_checkpoint')
+        save_tag = '1'
+
+        engine_to_save.save_checkpoint(save_folder, tag=save_tag)
+
+        is_sparse_destination = isinstance(model_destination,
+                                           ModelEmbedding) and destination_sparse
+        if isinstance(model_destination,
+                      ModelEmbedding) and model_destination.emb.sparse:
+            assert "emb.weight" in engine_destination.sparse_tensor_module_names
+        engine_destination.load_checkpoint(save_folder,
+                                           tag=save_tag,
+                                           load_module_strict=False,
+                                           load_optimizer_states=False,
+                                           load_lr_scheduler_states=False,
+                                           load_module_only=False)
+        if isinstance(model_destination,
+                      ModelEmbedding) and isinstance(model_to_save,
+                                                     ModelEmbedding):
+            assert engine_destination.sparse_tensor_module_names == engine_to_save.sparse_tensor_module_names
+        elif isinstance(model_destination, ModelEmbedding):
+            assert not is_sparse_destination or "emb.weight" in engine_destination.sparse_tensor_module_names
+        else:
+            assert len(engine_destination.sparse_tensor_module_names) == 0
+
+    if to_save_model_has_embedding:
+        model_to_save = ModelEmbedding()
+    else:
+        model_to_save = ModelNoEmbedding()
+    if destination_has_embedding:
+        model_destination = ModelEmbedding()
+    else:
+        model_destination = ModelNoEmbedding()
+    _test(model_to_save, model_destination)
