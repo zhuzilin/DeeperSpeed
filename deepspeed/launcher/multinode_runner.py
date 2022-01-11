@@ -116,7 +116,7 @@ class OpenMPIRunner(MultiNodeRunner):
 
     def get_cmd(self, environment, active_resources):
         total_process_count = sum(self.resource_pool.values())
-
+        allow_run_as_root = os.environ.get('RUN_MPI_AS_ROOT', False)
         mpirun_cmd = [
             'mpirun',
             '-n',
@@ -130,7 +130,9 @@ class OpenMPIRunner(MultiNodeRunner):
             'btl_tcp_if_include',
             'eth0',
         ]
-
+        if allow_run_as_root:
+            mpirun_cmd.insert(1, '--allow-run-as-root')
+            
         export_cmd = []
         for k, v in self.exports.items():
             export_cmd += ['-x', f'{k}={v}']
