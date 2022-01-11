@@ -7,7 +7,6 @@ import sys
 
 from collections import namedtuple
 from itertools import product as cartesian_product
-from pprint import pprint
 
 
 class ProcessTopology:
@@ -466,8 +465,3 @@ class PipelineParallelGrid:
 
     def get_slice_parallel_group(self):
         return self.slice_proc_group
-
-
-if __name__ == "__main__":
-    topo = PipeModelDataParallelTopology(num_pp=6, num_dp=2, num_mp=4)
-    pprint(str(topo))
