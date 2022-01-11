@@ -205,6 +205,12 @@ class DeepSpeedEngine(Module):
         self.block_eigenvalue = None
         self.gas_boundary_ctr = 0
         self.dist_backend = "nccl"
+        ######################################################
+        # Eleuther additions for accessing gradients:
+        self.store_gradients = False
+        self.store_gradients_cpu = False
+        self.stored_gradients = None
+        ######################################################
         self.has_moe_layers = False
         self.num_experts = None
         self.gate_modules = []
@@ -339,6 +345,51 @@ class DeepSpeedEngine(Module):
         util_ops = UtilsBuilder().load()
         self.flatten = util_ops.flatten
         self.unflatten = util_ops.unflatten
+
+        # Eleuther additions for pytorch hooks:
+        self.layer_outputs, self.layers_to_hook, self.hooks = {}, [], []
+        self.layer_name_pattern = "transformerlayer"
+        self.register_forward_hook(layers_to_hook=self.layers_to_hook)
+
+    def register_forward_hook(self, layers_to_hook: list, layer_name_pattern: str = "transformerlayer"):
+        """
+        Registers a forward hook for a list of layers, using a regex pattern to match layer names.
+
+        hooks are appended to `self.hooks`, and can be removed later with `self.remove_hooks()`
+        
+        :param layers_to_hook: list of layers to hook
+        :param layer_name_pattern: regex pattern to match layer names
+        """
+        self.layer_name_pattern = re.compile(layer_name_pattern, re.IGNORECASE)
+        self.layers_to_hook = layers_to_hook
+
+        # remove old hooks
+        self.remove_hooks()
+
+        def hook_fn(module, input, output):
+            if hasattr(module, 'layer_number'):
+                key = module.layer_number
+                if self.layers_to_hook == "all":
+                    pass
+                if int(key) not in self.layers_to_hook:
+                    return
+            else:
+                key = module.__class__.__name__
+            self.layer_outputs[key] = [o.cpu() if torch.is_tensor(o) else o for o in output]
+
+        def get_all_layers(net):
+            for name, layer in net._modules.items():
+                if isinstance(layer, torch.nn.Sequential):
+                    get_all_layers(layer)
+                elif hasattr(layer, "__class__") and self.layer_name_pattern.search(layer.__class__.__name__.lower()):
+                    self.hooks.append(layer.register_forward_hook(hook_fn))
+
+    def remove_hooks(self):
+        if self.hooks:
+            # remove old hooks
+            for handle in self.hooks:
+                handle.remove()
+            self.hooks = []
 
     def _get_model_parameters(self):
         if self.autotuning_profile_model_info():
@@ -1797,6 +1848,14 @@ class DeepSpeedEngine(Module):
                 clip_grad_norm_(parameters=master_params,
                                 max_norm=self.gradient_clipping(),
                                 mpu=self.mpu)
+
+        # store gradients if specified
+        if self.store_gradients:
+            if self.store_gradients_cpu:
+                self.stored_gradients = list([p.grad.clone().cpu() for p in self.module.parameters()])
+            else:
+                self.stored_gradients = list([p.grad.clone() for p in self.module.parameters()])
+        
         self.optimizer.step()
 
         if hasattr(self.optimizer, '_global_grad_norm'):
@@ -1815,6 +1874,7 @@ class DeepSpeedEngine(Module):
                 self.eigenvalue_enabled(),
                 block_eigenvalue,
             )
+            
         # zero grad in basic optimizer could be unreliable and may not exhibit
         # the behaviour that we want
         if (not self.zero_optimization() and not self.fp16_enabled()

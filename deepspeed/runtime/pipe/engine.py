@@ -10,6 +10,7 @@ from types import MethodType
 from numpy import prod
 
 import torch
+from torch._C import bfloat16
 import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
@@ -42,6 +43,10 @@ mem_cached = 0
 def _tensor_bytes(tensor):
     return tensor.numel() * tensor.element_size()
 
+def print_rank_0(message, debug=False, force=False):
+    if torch.distributed.get_rank() == 0 and (debug or force):
+        print(message)
+
 
 class PipelineEngine(DeepSpeedEngine):
     """ A training engine hybrid pipeline, data, and model parallel training.
@@ -73,6 +78,8 @@ class PipelineEngine(DeepSpeedEngine):
 
         # We schedule the all-reduces, so disable it in super().backward()
         self.enable_backward_allreduce = False
+        self.eval_return_logits = False
+        self.outputs = None
         self.has_bool_tensors = has_bool_tensors
 
         # used to disable the pipeline all-reduce when used with 1-bit Adam/1-bit LAMB
@@ -175,7 +182,8 @@ class PipelineEngine(DeepSpeedEngine):
 
         self.first_output_send = True
         self.first_gradient_send = True
-
+        self.timer_values = None
+        
         #stores the loss for the current micro batch being processed
         self.loss = torch.tensor(0.0).to(self.device)
 
@@ -219,6 +227,10 @@ class PipelineEngine(DeepSpeedEngine):
             self.timers('step_microstep').start()
             self.timers('step_microstep').stop()
 
+    def set_has_bool_tensors(self, value: bool):
+        assert isinstance(value, bool)
+        self.has_bool_tensors = value
+
     def _build_data_iter(self, dataset):
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset,
@@ -231,6 +243,9 @@ class PipelineEngine(DeepSpeedEngine):
         self.set_dataloader(pipe_dataloader)
 
     def _exec_reduce_tied_grads(self):
+        if self.wall_clock_breakdown():
+            self.timers('reduce_tied_grads').start()
+            self.timers('comms').start()
         # We need to run this first to write to self.averaged_gradients;
         # since this class turns `enable_backward_allreduce` off,
         # `self.overlapping_partition_gradients_reduce_epilogue()` defined in the DeepSpeedEngine
@@ -242,12 +257,21 @@ class PipelineEngine(DeepSpeedEngine):
         if self.zero_optimization_partition_gradients():
             self.optimizer.overlapping_partition_gradients_reduce_epilogue()
         self.module.allreduce_tied_weight_gradients()
+        if self.wall_clock_breakdown():
+            self.timers('reduce_tied_grads').stop()
+            self.timers('comms').stop()
 
     def _exec_reduce_grads(self):
+        if self.wall_clock_breakdown():
+            self.timers('reduce_grads').start()
+            self.timers('comms').start()
         self._force_grad_boundary = True
         if self.pipeline_enable_backward_allreduce:
             self.allreduce_gradients(bucket_size=MEMORY_OPT_ALLREDUCE_SIZE)
         self._force_grad_boundary = False
+        if self.wall_clock_breakdown():
+            self.timers('reduce_grads').stop()
+            self.timers('comms').stop()
 
     def _reserve_pipe_buffers(self, num_buffers):
         """Ensure that each pipeline buffer has at least ``num_buffers`` slots.
@@ -275,7 +299,7 @@ class PipelineEngine(DeepSpeedEngine):
         self.grad_layer = None
         self.meta_buffer = None
 
-    def train_batch(self, data_iter=None):
+    def train_batch(self, data_iter=None, layers_to_hook=None):
         """Progress the pipeline to train the next batch of data. The engine will ingest
         ``self.train_batch_size()`` total samples collectively across all workers.
 
@@ -302,6 +326,9 @@ class PipelineEngine(DeepSpeedEngine):
         if not torch._C.is_grad_enabled():
             raise RuntimeError(
                 f'train_batch() requires gradients enabled. Use eval_batch() instead.')
+        
+        if layers_to_hook is None:
+            self.layers_to_hook = layers_to_hook
 
         # Curriculum learning could change activation shape
         if self.curriculum_enabled():
@@ -354,17 +381,25 @@ class PipelineEngine(DeepSpeedEngine):
 
         if self.wall_clock_breakdown(
         ) and self.global_steps % self.steps_per_print() == 0:
-            self.timers.log([
-                'pipe_send_output',
-                'pipe_send_grad',
-                'pipe_recv_input',
-                'pipe_recv_grad'
-            ])
+            pct_comms = self.timers('comms').elapsed(reset=False) / elapsed * 100
+            pct_optimizer_step = self.timers('step').elapsed(reset=False) / elapsed * 100
+            pct_fwd = self.timers('forward').elapsed(reset=False) / elapsed * 100
+            pct_backward = self.timers('backward').elapsed(reset=False) / elapsed * 100
+            timer_values = {'pct_comms': pct_comms, 'pct_optimizer_step': pct_optimizer_step,
+                            'pct_fwd': pct_fwd, 'pct_backward': pct_backward}
+            print_rank_0(
+                f'%comms: {pct_comms} \n %optimizer_step {pct_optimizer_step} \n %forward: {pct_fwd} \n %backward: {pct_backward}')
+            names = list(self.timers.timers.keys())
+            timer_values.update(self.timers.log(names))
+            self.timer_values = timer_values
+
+        if layers_to_hook is not None:
+            self.layers_to_hook = []
 
         # TODO: should return precisely what loss returned and allow others to be queried?
         return self.agg_train_loss
 
-    def eval_batch(self, data_iter, compute_loss=True, reduce_output='avg'):
+    def eval_batch(self, data_iter, compute_loss=True, reduce_output='avg', return_logits=False, layers_to_hook=None):
         """Evaluate the pipeline on a batch of data from ``data_iter``. The
         engine will evaluate ``self.train_batch_size()`` total samples
         collectively across all workers.
@@ -391,8 +426,11 @@ class PipelineEngine(DeepSpeedEngine):
         Returns:
             The arithmetic mean of the losses computed this batch.
         """
-
+        self.eval_return_logits = return_logits
         self.module.eval()
+
+        if layers_to_hook is not None:
+            self.layers_to_hook = layers_to_hook
 
         # Curriculum learning could change activation shape
         if self.curriculum_enabled():
@@ -438,10 +476,136 @@ class PipelineEngine(DeepSpeedEngine):
         # Restore the training iterator
         self.set_dataiterator(train_iterator)
 
-        # Reset any buffers that may have been populated during the forward passes.
-        #ds_checkpointing.reset()
+        # reset layers to hook to empty
+        if layers_to_hook is not None:
+            self.layers_to_hook = []
+
+        self.eval_return_logits = False
+        if return_logits:
+            outputs = self.outputs
+            self.outputs = None
+            return eval_output, outputs
 
         return eval_output
+
+    def inference_batch(self, data_iter, layers_to_hook=None):
+        """Inference the pipeline on a single batch of data from ``data_iter``.
+        This method is equivalent to:
+        .. code-block:: python
+            module.eval()
+            with torch.no_grad():
+                output = module(batch)
+        .. warning::
+            we're assuming that in inference we a) don't want to calculate loss and b) gradient_accum_steps = 0
+        Args:
+            data_iter (Iterator): Iterator of data to evaluate.
+            data_iter should have dummy labels as deepspeed expects it this way
+        Returns:
+            logits, presents (NB this is not a general purpose function, it's designed specifically to run with
+            gpt-neox, which will return logits + presents in inference. This is a massive hack.)
+        """
+        self.module.eval()
+        self.total_loss = None
+        if self.micro_batches > 1:
+            print_rank_0('WARNING: setting g.a.s to 1 in inference')
+            self.micro_batches = 1
+        train_batch_fn = self.batch_fn
+        self.set_batch_fn(lambda x: x) # we just want to return `data_iter` as is
+
+        self.reset_activation_shape()
+
+        if self.is_data_parallel:
+            raise NotImplementedError('Inference not yet implemented for pipeline + data parellel')
+
+        # Use the provided data iterator
+        train_iterator = self.data_iterator
+        self.set_dataiterator(data_iter)
+
+        if layers_to_hook is not None:
+            self.layers_to_hook = layers_to_hook
+
+        # Do the work
+        sched = schedule.InferenceSchedule(micro_batches=self.micro_batches,
+                                           stages=self.num_stages,
+                                           stage_id=self.stage_id)
+        with torch.no_grad():
+            self._exec_schedule(sched)
+
+        # the shapes are variable so we need to first broadcast the shapes, then the tensors themselves
+
+        precision = torch.bfloat16 if self.bfloat16_enabled() else torch.float16
+
+        if self.is_last_stage():
+            # TODO(sid): we can probably do this more efficiently - don't need to broadcast to every rank, only the input ranks!
+
+            logits, presents = self.total_loss
+            logits = logits.clone().detach()
+            presents = presents.clone().detach()
+            logits_shape = list(logits.shape)
+            presents_shape = list(presents.shape)
+
+            logits_shape_tensor = torch.LongTensor(logits_shape).to(self.device)
+            presents_shape_tensor = torch.LongTensor(presents_shape).to(self.device)
+            dist.broadcast(tensor=logits_shape_tensor,
+                           src=self.global_rank)
+            dist.broadcast(tensor=presents_shape_tensor,
+                           src=self.global_rank)
+        else:
+            src_rank = self.grid.stage_to_global(self.num_stages - 1)
+            logits_shape_tensor = torch.LongTensor([0] * 3).to(self.device)
+            presents_shape_tensor = torch.LongTensor([0] * 6).to(self.device)
+            dist.broadcast(tensor=logits_shape_tensor,
+                           src=src_rank)
+            dist.broadcast(tensor=presents_shape_tensor,
+                           src=src_rank)
+            logits_shape_tensor = logits_shape_tensor.clone().detach()
+            presents_shape_tensor = presents_shape_tensor.clone().detach()
+
+        logits_shape = logits_shape_tensor.tolist()
+        presents_shape = presents_shape_tensor.tolist()
+
+        if self.is_last_stage():
+            dist.broadcast(tensor=logits,
+                           src=self.global_rank,
+                           group=self.mpu.get_pipe_parallel_group())
+            dist.broadcast(tensor=presents,
+                           src=self.global_rank,
+                           group=self.mpu.get_pipe_parallel_group())
+
+        else:
+            logits = torch.zeros(logits_shape, dtype=precision).to(
+                self.device)
+            presents = torch.zeros(presents_shape, dtype=precision).to(
+                self.device)
+            src_rank = self.grid.stage_to_global(self.num_stages - 1)
+            assert src_rank in self.grid.pp_group
+            dist.broadcast(tensor=logits,
+                           src=src_rank,
+                           group=self.grid.get_pipe_parallel_group())
+            dist.broadcast(tensor=presents,
+                           src=src_rank,
+                           group=self.grid.get_pipe_parallel_group())
+            logits = logits.clone().detach()
+            presents = presents.clone().detach()
+
+        if self.tensorboard_enabled():
+            if self.global_rank == 0:
+                self.summary_events = [(f'Train/Samples/eval_loss',
+                                        self.agg_eval_loss.mean().item(),
+                                        self.global_samples)]
+                for event in self.summary_events:  # write_summary_events
+                    self.summary_writer.add_scalar(event[0], event[1], event[2])
+                self.summary_writer.flush()
+
+        # Restore the training iterator & batch_fn
+        self.set_dataiterator(train_iterator)
+        self.set_batch_fn(train_batch_fn)
+
+        # reset layers to hook to empty
+        if layers_to_hook is not None:
+            self.layers_to_hook = []
+            
+        return logits, presents
 
     def set_train_batch_size(self, train_batch_size):
         """Adjust the global batch size by increasing or decreasing the number of
@@ -910,6 +1074,7 @@ class PipelineEngine(DeepSpeedEngine):
     def _exec_send_activations(self, buffer_id):
         if self.wall_clock_breakdown():
             self.timers('pipe_send_output').start()
+            self.timers('comms').start()
 
         outputs = self.pipe_buffers['outputs'][buffer_id]
 
@@ -942,6 +1107,7 @@ class PipelineEngine(DeepSpeedEngine):
 
         if self.wall_clock_breakdown():
             self.timers('pipe_send_output').stop()
+            self.timers('comms').stop()
 
     def _exec_send_grads(self, buffer_id):
         if self.wall_clock_breakdown():
@@ -1050,6 +1216,7 @@ class PipelineEngine(DeepSpeedEngine):
     def _exec_recv_grads(self, buffer_id):
         if self.wall_clock_breakdown():
             self.timers('pipe_recv_grad').start()
+            self.timers('comms').start()
 
         outputs = self.pipe_buffers['outputs'][buffer_id]
         # XXX these shapes are hardcoded for Megatron
@@ -1113,6 +1280,7 @@ class PipelineEngine(DeepSpeedEngine):
 
         if self.wall_clock_breakdown():
             self.timers('pipe_recv_grad').stop()
+            self.timers('comms').stop()
 
     def _exec_optimizer_step(self, lr_kwargs=None):
         if self.wall_clock_breakdown():

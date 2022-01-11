@@ -96,18 +96,23 @@ class SynchronizedWallClockTimer:
             torch.cuda.max_memory_cached() / (1024 * 1024 * 1024))
         return " | {} | {} | {} | {}".format(alloc, max_alloc, cache, max_cache)
 
-    def log(self, names, normalizer=1.0, reset=True, memory_breakdown=False, ranks=None):
+    def log(self, names, normalizer=1.0, reset=True, memory_breakdown=False, ranks=None, return_values=True):
         """Log a group of timers."""
         assert normalizer > 0.0
         string = f"rank={torch.distributed.get_rank()} time (ms)"
+        if return_values:
+            return_dict = {}
         for name in names:
             if name in self.timers:
                 elapsed_time = (self.timers[name].elapsed(reset=reset) * 1000.0 /
                                 normalizer)
                 string += " | {}: {:.2f}".format(name, elapsed_time)
-
+                if return_values:
+                    return_dict[name] = elapsed_time
         log_dist(string, ranks=ranks or [0])
-
+        if return_values:
+            return return_dict
+            
     def get_mean(self, names, normalizer=1.0, reset=True):
         """Get the mean of a group of timers."""
         assert normalizer > 0.0

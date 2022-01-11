@@ -603,11 +603,10 @@ class PipelineModule(nn.Module):
         # This is an unfortunate hack related to torch and deepspeed activation checkpoint implementations.
         # Some layers like torch.nn.Embedding will not receive grads if checkpointed, which breaks things.
         # I presume it's related to the discrete inputs that cannot require_grad? Need to revisit.
-        if self.__class__.__name__ in ('GPTModelPipe', 'GPT2ModelPipe'):
-            return all('ParallelTransformerLayerPipe' in f.__class__.__name__
-                       for f in funcs)
         if self.checkpointable_layers is not None:
             return all(f.__class__.__name__ in self.checkpointable_layers for f in funcs)
-
+        elif self.__class__.__name__ == 'GPT2ModelPipe':
+            return all('ParallelTransformerLayerPipe' in f.__class__.__name__
+                       for f in funcs)
         params = [f.parameters() for f in funcs if isinstance(f, torch.nn.Module)]
         return any(len(list(p)) > 0 for p in params)
