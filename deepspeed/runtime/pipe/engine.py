@@ -10,7 +10,6 @@ from types import MethodType
 from numpy import prod
 
 import torch
-from torch._C import bfloat16
 import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
