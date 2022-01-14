@@ -511,6 +511,8 @@ class PipelineEngine(DeepSpeedEngine):
             self.micro_batches = 1
         train_batch_fn = self.batch_fn
         self.set_batch_fn(lambda x: x) # we just want to return `data_iter` as is
+        compute_loss_before = getattr(self, '_compute_loss', True)
+        self._compute_loss = False
 
         self.reset_activation_shape()
 
@@ -529,6 +531,7 @@ class PipelineEngine(DeepSpeedEngine):
                                            stages=self.num_stages,
                                            stage_id=self.stage_id)
         with torch.no_grad():
+            print(f'exec schedule, rank: {self.global_rank}')
             self._exec_schedule(sched)
 
         # the shapes are variable so we need to first broadcast the shapes, then the tensors themselves
@@ -604,7 +607,9 @@ class PipelineEngine(DeepSpeedEngine):
         # reset layers to hook to empty
         if layers_to_hook is not None:
             self.layers_to_hook = []
-            
+        
+        # restore _compute_loss
+        self._compute_loss = compute_loss_before
         return logits, presents
 
     def set_train_batch_size(self, train_batch_size):
@@ -767,7 +772,7 @@ class PipelineEngine(DeepSpeedEngine):
     def _exec_forward_pass(self, buffer_id):
         self.tput_timer.start()
         self.mem_status('BEFORE FWD', reset_max=True)
-
+        
         if isinstance(self.pipe_buffers['inputs'][buffer_id], tuple):
             inputs = tuple(t.clone() for t in self.pipe_buffers['inputs'][buffer_id])
         else:
