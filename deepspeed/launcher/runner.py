@@ -287,6 +287,9 @@ def main(args=None):
 
     env = os.environ.copy()
 
+    if "MASTER_ADDR" in os.environ:
+        args.master_addr = os.environ["MASTER_ADDR"]
+        args.master_port = os.environ["MASTER_PORT"]
     if not args.master_addr:
         first_host = list(active_resources.keys())[0]
         hostname_cmd = ["ssh {} hostname -I".format(first_host)]
@@ -315,16 +318,28 @@ def main(args=None):
 
     multi_node_exec = args.force_multi or len(active_resources) > 1
 
-    if not multi_node_exec:
-        deepspeed_launch = [
-            sys.executable,
-            "-u",
-            "-m",
-            "deepspeed.launcher.launch",
-            "--world_info={}".format(world_info_base64),
-            "--master_addr={}".format(args.master_addr),
-            "--master_port={}".format(args.master_port)
-        ]
+    if True or not multi_node_exec:
+        if "RANK" in os.environ:
+            deepspeed_launch = [
+                sys.executable,
+                "-u",
+                "-m",
+                "deepspeed.launcher.launch",
+                "--world_info={}".format(world_info_base64),
+                "--master_addr={}".format(args.master_addr),
+                "--master_port={}".format(args.master_port),
+                "--node_rank={}".format(os.environ["RANK"]),
+            ]
+        else:
+            deepspeed_launch = [
+                sys.executable,
+                "-u",
+                "-m",
+                "deepspeed.launcher.launch",
+                "--world_info={}".format(world_info_base64),
+                "--master_addr={}".format(args.master_addr),
+                "--master_port={}".format(args.master_port),
+            ]
         if args.detect_nvlink_pairs:
             deepspeed_launch += ["--detect_nvlink_pairs"]
         cmd = deepspeed_launch + [args.user_script] + args.user_args
